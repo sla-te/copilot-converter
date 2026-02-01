@@ -1,0 +1,68 @@
+{
+  "cicd-automation": {
+    "applyTo": "**/{.github,workflows,gitlab-ci,jenkins}/**/*.{yml,yaml,groovy}",
+    "description": "CI/CD configuration files"
+  },
+  "cloud-infrastructure": {
+    "applyTo": "**/*.{tf,hcl}",
+    "description": "Terraform and HCL IaC"
+  },
+  "database-design": {
+    "applyTo": "**/*.{sql,prisma,dbml,schema}",
+    "description": "SQL and schema artifacts"
+  },
+  "dotnet-contribution": {
+    "applyTo": "**/*.{cs,fs,vb,csproj,sln,xaml}",
+    "description": ".NET solution and source files"
+  },
+  "javascript-typescript": {
+    "applyTo": "**/*.{js,ts,jsx,tsx,cjs,mjs}",
+    "description": "JavaScript and TypeScript sources"
+  },
+  "julia-development": {
+    "applyTo": "**/*.{jl,julia}",
+    "description": "Julia sources"
+  },
+  "jvm-languages-java": {
+    "agentHint": "java",
+    "applyTo": "**/*.{java,kt,groovy,clj}",
+    "description": "JVM languages (Java/Kotlin/Groovy/Clojure)"
+  },
+  "jvm-languages-scala": {
+    "agentHint": "scala",
+    "applyTo": "**/*.scala",
+    "description": "Scala sources"
+  },
+  "kubernetes-operations": {
+    "applyTo": "**/{kubernetes,k8s,helm}/**/*.{yaml,yml}",
+    "description": "Kubernetes and Helm manifests"
+  },
+  "python-development": {
+    "applyTo": "**/*.{py,pyw,ipynb}",
+    "description": "Python sources and notebooks"
+  },
+  "shell-scripting": {
+    "applyTo": "**/*.{sh,bash,zsh,fish,awk,sed}",
+    "description": "Shell scripts"
+  },
+  "systems-programming-c": {
+    "agentHint": "c",
+    "applyTo": "**/*.{c,h}",
+    "description": "C sources and headers"
+  },
+  "systems-programming-cpp": {
+    "agentHint": "cpp",
+    "applyTo": "**/*.{cpp,cxx,hpp,hxx}",
+    "description": "C++ sources and headers"
+  },
+  "systems-programming-go": {
+    "agentHint": "go",
+    "applyTo": "**/*.go",
+    "description": "Go sources"
+  },
+  "systems-programming-rust": {
+    "agentHint": "rust",
+    "applyTo": "**/*.rs",
+    "description": "Rust sources"
+  }
+}

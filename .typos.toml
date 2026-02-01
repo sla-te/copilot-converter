@@ -1,0 +1,12 @@
+[files]
+# Keep default discovery but allow project-specific exclusions when needed.
+extend-exclude = []
+
+[default]
+# Allow short tokens and telemetry IDs without flagging as typos.
+extend-ignore-words-re = ["^[A-Za-z]{1,4}$"]
+
+[default.extend-words]
+# Domain terms and statistical function names
+ba = "ba"
+ttest = "ttest"
