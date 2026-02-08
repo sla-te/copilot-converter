@@ -1,41 +1,22 @@
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Iterable
 
 from .builders import (
-    build_prompts_for_plugin,
+    build_agent_file,
+    build_commands_for_plugin,
+    build_skill_file,
     collect_skill_previews,
-    create_skill_output,
-    write_copilot_instructions,
-    write_vscode_settings,
-)
-from .clustering import (
-    build_cluster_prompts,
-    build_command_docs,
-    build_command_neighbors,
-    cluster_commands,
-    compute_tfidf_vectors,
-    write_cluster_report,
+    write_plugin_manifest,
+    write_plugin_readme,
 )
 from .constants import SKILL_GLOB
-from .file_ops import ensure_empty_dir, read_text
-from .mappings import get_mapping_entries
+from .file_ops import ensure_empty_dir, load_json, read_text, write_text
 from .models import DecisionRecord
-from .persona import extract_agent_persona, preview_text
-from .suffix_stripping import strip_suffix_scoped_artifacts
 
-
-def load_marketplace_plugins(source: Path) -> set[str]:
-    marketplace = source / ".claude-plugin" / "marketplace.json"
-    if not marketplace.exists():
-        return set()
-    try:
-        data = json.loads(read_text(marketplace))
-    except json.JSONDecodeError:
-        return set()
-    plugins = {item.get("name") for item in data.get("plugins", []) if item.get("name")}
-    return {p for p in plugins if isinstance(p, str)}
+_SKILL_LINK_RE = re.compile(r"\.\./([a-z0-9][a-z0-9_-]*)/SKILL\.md")
 
 
 def iter_plugin_dirs(source: Path, plugin_filter: set[str] | None) -> Iterable[Path]:
@@ -56,20 +37,103 @@ def resolve_source(source_arg: str) -> Path:
     return source
 
 
-def resolve_output_root(source: Path, output_arg: str | None) -> Path:
-    output_root = Path(output_arg).expanduser().resolve() if output_arg else source / ".github"
+def resolve_output_root(output_arg: str | None) -> Path:
+    output_root = Path(output_arg).expanduser().resolve() if output_arg else Path.cwd() / "plugins"
     output_root.mkdir(parents=True, exist_ok=True)
     return output_root
 
 
-def resolve_plugin_filter(source: Path, include_plugins: str | None) -> set[str] | None:
-    if not include_plugins:
-        return None
-    plugin_filter = {p.strip() for p in include_plugins.split(",") if p.strip()}
-    marketplace_plugins = load_marketplace_plugins(source)
-    if marketplace_plugins:
-        plugin_filter = {p for p in plugin_filter if p in marketplace_plugins}
-    return plugin_filter
+def _plugin_names(source: Path) -> list[str]:
+    plugins_dir = source / "plugins"
+    if not plugins_dir.exists():
+        return []
+    return sorted(item.name for item in plugins_dir.iterdir() if item.is_dir())
+
+
+def _collect_plugin_skill_index(source: Path) -> tuple[dict[str, list[Path]], dict[str, set[str]]]:
+    plugins_dir = source / "plugins"
+    skill_paths_by_plugin: dict[str, list[Path]] = {}
+    skill_names_by_plugin: dict[str, set[str]] = {}
+    if not plugins_dir.exists():
+        return skill_paths_by_plugin, skill_names_by_plugin
+
+    for plugin_dir in sorted((p for p in plugins_dir.iterdir() if p.is_dir()), key=lambda p: p.name):
+        skill_paths = sorted((plugin_dir / "skills").glob(SKILL_GLOB), key=lambda p: p.parent.name)
+        skill_paths_by_plugin[plugin_dir.name] = skill_paths
+        skill_names_by_plugin[plugin_dir.name] = {path.parent.name for path in skill_paths}
+
+    return skill_paths_by_plugin, skill_names_by_plugin
+
+
+def _extract_skill_refs(content: str) -> list[tuple[str | None, str]]:
+    refs: list[tuple[str | None, str]] = []
+    for token in _SKILL_LINK_RE.findall(content):
+        if "__" in token:
+            plugin_name, skill_name = token.split("__", 1)
+            refs.append((plugin_name, skill_name))
+        else:
+            refs.append((None, token))
+    return refs
+
+
+def _resolve_plugin_dependencies(source: Path, enabled_plugins: set[str]) -> tuple[set[str], set[str]]:
+    skill_paths_by_plugin, skill_names_by_plugin = _collect_plugin_skill_index(source)
+    skill_to_plugins: dict[str, set[str]] = {}
+    for plugin_name, skill_names in skill_names_by_plugin.items():
+        for skill_name in skill_names:
+            skill_to_plugins.setdefault(skill_name, set()).add(plugin_name)
+
+    dependencies: dict[str, set[str]] = {plugin: set() for plugin in skill_paths_by_plugin}
+    for plugin_name, skill_paths in skill_paths_by_plugin.items():
+        own_skills = skill_names_by_plugin.get(plugin_name, set())
+        for skill_path in skill_paths:
+            for explicit_plugin, skill_name in _extract_skill_refs(read_text(skill_path)):
+                if explicit_plugin:
+                    provider_skills = skill_names_by_plugin.get(explicit_plugin, set())
+                    if skill_name in provider_skills and explicit_plugin != plugin_name:
+                        dependencies[plugin_name].add(explicit_plugin)
+                    continue
+                if skill_name in own_skills:
+                    continue
+                for provider_plugin in skill_to_plugins.get(skill_name, set()):
+                    if provider_plugin != plugin_name:
+                        dependencies[plugin_name].add(provider_plugin)
+
+    resolved_enabled = set(enabled_plugins)
+    stack = list(enabled_plugins)
+    while stack:
+        plugin_name = stack.pop()
+        for provider_plugin in dependencies.get(plugin_name, set()):
+            if provider_plugin not in resolved_enabled:
+                resolved_enabled.add(provider_plugin)
+                stack.append(provider_plugin)
+
+    auto_enabled = resolved_enabled - enabled_plugins
+    return resolved_enabled, auto_enabled
+
+
+def sync_plugin_selection(source: Path, config_path: Path) -> set[str]:
+    plugin_names = _plugin_names(source)
+    existing = load_json(config_path) if config_path.exists() else {}
+    existing_plugins = existing.get("plugins", {})
+
+    normalized_plugins: dict[str, bool] = {}
+    for name in plugin_names:
+        raw_value = existing_plugins.get(name, True) if isinstance(existing_plugins, dict) else True
+        normalized_plugins[name] = raw_value if isinstance(raw_value, bool) else True
+
+    initially_enabled = {name for name, enabled in normalized_plugins.items() if enabled}
+    resolved_enabled, auto_enabled = _resolve_plugin_dependencies(source, initially_enabled)
+    for name in plugin_names:
+        normalized_plugins[name] = name in resolved_enabled
+
+    payload = {
+        "source": str(source),
+        "plugins": normalized_plugins,
+        "auto_enabled_due_to_skill_references": sorted(auto_enabled),
+    }
+    write_text(config_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return resolved_enabled
 
 
 def write_decision_log(path: Path, decisions: list[DecisionRecord]) -> None:
@@ -80,16 +144,7 @@ def write_decision_log(path: Path, decisions: list[DecisionRecord]) -> None:
             {
                 "plugin": d.plugin,
                 "classification": d.classification,
-                "mapping_entries": [
-                    {
-                        "name": m.name,
-                        "applyTo": m.apply_to,
-                        "agentHint": m.agent_hint,
-                        "description": m.description,
-                        "source": m.source,
-                    }
-                    for m in d.mapping_entries
-                ],
+                "mapping_entries": [],
                 "outputs": d.outputs,
                 "prompts": d.prompts,
                 "agents": d.agents,
@@ -102,231 +157,154 @@ def write_decision_log(path: Path, decisions: list[DecisionRecord]) -> None:
                 "skill_previews": d.skill_previews,
                 "notes": d.notes,
                 "reasons": d.reasons,
-                "command_neighbors": d.command_neighbors,
+                "command_neighbors": [],
             }
         )
     path.write_text(json.dumps(serializable, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def process_plugin_agents(plugin_path: Path, agents_dir: Path, skip_agents: bool) -> None:
-    if skip_agents:
-        return
-    plugin_name = plugin_path.name
-    for agent_file in (plugin_path / "agents").glob("*.md"):
-        destination = agents_dir / f"{plugin_name}__{agent_file.name}"
-        from copilot_converter.builders import (
-            build_agent_file,  # local import to avoid cycle
-        )
-
+def _process_plugin_agents(plugin_path: Path, agents_dir: Path) -> tuple[list[str], list[str]]:
+    produced_paths: list[str] = []
+    agent_names: list[str] = []
+    for agent_file in sorted((plugin_path / "agents").glob("*.md"), key=lambda p: p.name):
+        destination = agents_dir / agent_file.name
         build_agent_file(agent_file, destination)
+        produced_paths.append(str(destination))
+        agent_names.append(agent_file.stem)
+    return produced_paths, agent_names
 
 
-def process_plugin_skills(
-    plugin_path: Path,
-    skills_dir: Path,
-    skip_skills: bool,
-    skill_files: list[Path] | None = None,
-) -> None:
-    if skip_skills:
-        return
-    plugin_name = plugin_path.name
-    files = (
-        sorted(skill_files, key=lambda p: p.parent.name)
-        if skill_files is not None
-        else sorted((plugin_path / "skills").glob(SKILL_GLOB), key=lambda p: p.parent.name)
-    )
-    for skill_file in files:
+def _process_plugin_skills(plugin_path: Path, skills_dir: Path) -> tuple[list[str], list[str]]:
+    produced_paths: list[str] = []
+    skill_names: list[str] = []
+    for skill_file in sorted((plugin_path / "skills").glob(SKILL_GLOB), key=lambda p: p.parent.name):
         skill_name = skill_file.parent.name
-        from copilot_converter.builders import (
-            build_skill_file,  # local import to avoid cycle
-        )
-
-        skill_output_dir = skills_dir / f"{plugin_name}__{skill_name}"
+        skill_output_dir = skills_dir / skill_name
         destination = skill_output_dir / "SKILL.md"
-        build_skill_file(skill_file, destination, plugin_name)
-
-
-def process_remaining_artifacts(
-    plugin_path: Path,
-    skills_dir: Path,
-    prompts_dir: Path,
-    plugin_name: str,
-    skill_files: list[Path],
-    command_files: list[Path],
-    agent_persona: str | None,
-):
-    reasons: list[str] = []
-
-    outputs: list[str] = []
-    if skill_files:
-        outputs.extend(create_skill_output(plugin_path, skills_dir, plugin_name, agent_persona, skill_files))
-        if outputs:
-            reasons.append("remaining_skills_generated")
-    else:
-        reasons.append("no_remaining_skills")
-
-    prompts: list[str] = []
-    command_previews: list[dict[str, str]] = []
-    if command_files:
-        prompts, command_previews = build_prompts_for_plugin(
-            plugin_path,
-            prompts_dir,
-            plugin_name,
-            agent_persona,
-            command_files=command_files,
-        )
-        reasons.append("remaining_commands_prompts_generated")
-    else:
-        reasons.append("no_remaining_commands")
-
-    return (
-        outputs,
-        prompts,
-        command_previews,
-        reasons,
-    )
-
-
-def process_single_plugin(
-    plugin_path: Path,
-    output_root: Path,
-    neighbor_map: dict[str, list[dict[str, object]]],
-    cluster_map: dict[str, int],
-):
-    plugin_name = plugin_path.name
-    instructions_dir = output_root / "instructions"
-    prompts_dir = output_root / "prompts"
-    skills_dir = output_root / "skills"
-
-    mapping_entries = get_mapping_entries(plugin_name)
-    skill_files = sorted((plugin_path / "skills").glob(SKILL_GLOB), key=lambda p: p.parent.name)
-    command_files = sorted((plugin_path / "commands").glob("*.md"), key=lambda p: p.name)
-    agents = [p.name for p in sorted((plugin_path / "agents").glob("*.md"), key=lambda p: p.name)]
-    commands = [p.name for p in command_files]
-    skills = [p.parent.name for p in skill_files]
-    classification = "instruction" if mapping_entries else "skill"
-
-    agent_hint = mapping_entries[0].agent_hint if mapping_entries else None
-    agent_persona, selected_agent_name = extract_agent_persona(plugin_path, agent_hint)
-
-    suffix_result = strip_suffix_scoped_artifacts(
-        plugin_path=plugin_path,
-        instructions_dir=instructions_dir,
-        prompts_dir=prompts_dir,
-        mapping_entries=mapping_entries,
-        skill_files=skill_files,
-        command_files=command_files,
-    )
-
-    remaining_skill_files = [path for path in skill_files if path not in suffix_result.consumed_skill_files]
-    remaining_command_files = [path for path in command_files if path not in suffix_result.consumed_command_files]
-
-    process_plugin_skills(
-        plugin_path=plugin_path,
-        skills_dir=skills_dir,
-        skip_skills=not remaining_skill_files,
-        skill_files=remaining_skill_files,
-    )
-
-    cmd_neighbors: list[dict[str, object]] = []
-    for cmd in commands:
-        key = f"{plugin_name}::{Path(cmd).stem}" if "::" not in cmd else cmd
-        cmd_neighbors.append(
-            {
-                "command": cmd,
-                "neighbors": neighbor_map.get(key, []),
-                "cluster_id": cluster_map.get(key),
-            }
-        )
-
-    outputs = list(suffix_result.outputs)
-    prompts = list(suffix_result.prompts)
-    command_previews = list(suffix_result.command_previews)
-    reasons = list(suffix_result.reasons)
-
-    remaining_outputs, remaining_prompts, remaining_previews, remaining_reasons = process_remaining_artifacts(
-        plugin_path=plugin_path,
-        skills_dir=skills_dir,
-        prompts_dir=prompts_dir,
-        plugin_name=plugin_name,
-        skill_files=remaining_skill_files,
-        command_files=remaining_command_files,
-        agent_persona=agent_persona,
-    )
-    outputs.extend(remaining_outputs)
-    prompts.extend(remaining_prompts)
-    command_previews.extend(remaining_previews)
-    reasons.extend(remaining_reasons)
-
-    if agent_persona is None:
-        reasons.append("persona_missing")
-
-    agent_persona_preview = preview_text(agent_persona)
-    skill_previews = collect_skill_previews(plugin_path)
-
-    return DecisionRecord(
-        plugin=plugin_name,
-        classification=classification,
-        mapping_entries=mapping_entries,
-        outputs=outputs,
-        prompts=prompts,
-        agents=agents,
-        commands=commands,
-        skills=skills,
-        plugin_path=str(plugin_path),
-        selected_agent=selected_agent_name,
-        agent_persona_preview=agent_persona_preview,
-        command_previews=command_previews,
-        skill_previews=skill_previews,
-        notes=None,
-        reasons=reasons,
-        command_neighbors=cmd_neighbors,
-    )
+        build_skill_file(skill_file, destination)
+        produced_paths.append(str(destination))
+        skill_names.append(skill_name)
+    return produced_paths, skill_names
 
 
 def process_plugins(plugin_dirs: Iterable[Path], output_root: Path, args: argparse.Namespace) -> list[DecisionRecord]:
-    command_docs = build_command_docs(plugin_dirs)
-    vectors = compute_tfidf_vectors(command_docs) if command_docs else []
-    neighbor_map = build_command_neighbors(command_docs, vectors) if command_docs else {}
-    cluster_map = cluster_commands(command_docs, vectors) if command_docs else {}
-
-    instructions_dir = output_root / "instructions"
-    prompts_dir = output_root / "prompts"
-    skills_dir = output_root / "skills"
-    cluster_prompts_dir = output_root / "prompts_clusters"
-
-    ensure_empty_dir(instructions_dir, args.overwrite)
-    ensure_empty_dir(skills_dir, args.overwrite)
-    ensure_empty_dir(prompts_dir, args.overwrite)
-    ensure_empty_dir(cluster_prompts_dir, args.overwrite)
+    ensure_empty_dir(output_root, args.overwrite)
 
     decisions: list[DecisionRecord] = []
-    for plugin_path in plugin_dirs:
-        decisions.append(process_single_plugin(plugin_path, output_root, neighbor_map, cluster_map))
+    for plugin_path in sorted(plugin_dirs, key=lambda p: p.name):
+        plugin_name = plugin_path.name
+        plugin_output_dir = output_root / plugin_name
 
-    if args.decision_log and command_docs and vectors and cluster_map:
-        cluster_report_path = Path(args.decision_log).with_name("cluster_report.json")
-        write_cluster_report(cluster_report_path, command_docs, vectors, cluster_map)
+        agents_dir = plugin_output_dir / "agents"
+        commands_dir = plugin_output_dir / "commands"
+        skills_dir = plugin_output_dir / "skills"
+        for directory in (agents_dir, commands_dir, skills_dir):
+            directory.mkdir(parents=True, exist_ok=True)
 
-        cluster_prompt_records = build_cluster_prompts(
-            cluster_prompts_dir,
-            cluster_map,
-            command_docs,
-            vectors,
-            args.cluster_include_singletons,
+        manifest = write_plugin_manifest(plugin_path, plugin_output_dir)
+
+        agent_outputs, agent_names = _process_plugin_agents(plugin_path, agents_dir)
+        skill_outputs, skill_names = _process_plugin_skills(plugin_path, skills_dir)
+
+        command_files = sorted((plugin_path / "commands").glob("*.md"), key=lambda p: p.name)
+        prompt_outputs, command_previews = build_commands_for_plugin(
+            plugin_path=plugin_path,
+            commands_dir=commands_dir,
+            command_files=command_files,
         )
-        cluster_prompt_report_path = Path(args.decision_log).with_name("cluster_prompts_report.json")
-        cluster_prompt_report_path.parent.mkdir(parents=True, exist_ok=True)
-        cluster_prompt_report_path.write_text(
-            json.dumps(cluster_prompt_records, indent=2, sort_keys=True),
-            encoding="utf-8",
+        command_names = [item.stem for item in command_files]
+
+        write_plugin_readme(
+            plugin_dir=plugin_output_dir,
+            manifest=manifest,
+            command_names=command_names,
+            agent_names=agent_names,
+            skill_names=skill_names,
+        )
+
+        outputs = [
+            str(plugin_output_dir / ".github" / "plugin" / "plugin.json"),
+            str(plugin_output_dir / "README.md"),
+            *agent_outputs,
+            *skill_outputs,
+            *prompt_outputs,
+        ]
+
+        decisions.append(
+            DecisionRecord(
+                plugin=plugin_name,
+                classification="copilot-plugin",
+                mapping_entries=[],
+                outputs=outputs,
+                prompts=prompt_outputs,
+                agents=agent_names,
+                commands=command_names,
+                skills=skill_names,
+                plugin_path=str(plugin_path),
+                selected_agent=None,
+                agent_persona_preview=None,
+                command_previews=command_previews,
+                skill_previews=collect_skill_previews(plugin_path),
+                notes=None,
+                reasons=[
+                    "claude_plugin_to_copilot_plugin",
+                    "agents_to_agents_directory",
+                    "commands_to_commands_directory",
+                    "skills_to_skills_directory",
+                    "emit_plugin_manifest",
+                ],
+                command_neighbors=[],
+            )
         )
 
     return decisions
 
 
-def maybe_init(output_root: Path, source: Path, init_flag: bool) -> None:
-    if not init_flag:
-        return
-    write_copilot_instructions(output_root)
-    write_vscode_settings(source)
+def _slugify_marketplace_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")
+    return slug or "local-marketplace"
+
+
+def _marketplace_path(target: Path, workspace_root: Path) -> str:
+    target_resolved = target.resolve()
+    workspace_resolved = workspace_root.resolve()
+    try:
+        relative = target_resolved.relative_to(workspace_resolved)
+        return f"./{relative.as_posix()}"
+    except ValueError:
+        return str(target_resolved)
+
+
+def write_marketplace_manifest(workspace_root: Path, output_root: Path) -> Path:
+    plugin_entries: list[dict[str, str]] = []
+    for plugin_dir in sorted((p for p in output_root.iterdir() if p.is_dir()), key=lambda p: p.name):
+        plugin_manifest_path = plugin_dir / ".github" / "plugin" / "plugin.json"
+        if not plugin_manifest_path.exists():
+            continue
+        plugin_manifest = load_json(plugin_manifest_path)
+        plugin_entries.append(
+            {
+                "name": str(plugin_manifest.get("name") or plugin_dir.name),
+                "source": _marketplace_path(plugin_dir, workspace_root),
+                "description": str(plugin_manifest.get("description") or f"Plugin {plugin_dir.name}"),
+                "version": str(plugin_manifest.get("version") or "1.0.0"),
+            }
+        )
+
+    marketplace = {
+        "name": _slugify_marketplace_name(workspace_root.name),
+        "metadata": {
+            "description": "Generated Copilot plugin marketplace from wshobson/agents via copilot-converter.",
+            "version": "1.0.0",
+            "pluginRoot": _marketplace_path(output_root, workspace_root),
+        },
+        "owner": {
+            "name": "copilot-converter",
+            "email": "noreply@copilot-converter.local",
+        },
+        "plugins": plugin_entries,
+    }
+
+    destination = workspace_root / ".github" / "plugin" / "marketplace.json"
+    write_text(destination, json.dumps(marketplace, indent=2, sort_keys=False) + "\n")
+    return destination

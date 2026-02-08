@@ -1,31 +1,45 @@
 # Handoff
 
-## Current status
+## Current Status
 
-- Implemented a two-pass conversion flow:
-  - suffix-oriented stripping for mapped plugins
-  - residual processing for unconsumed skills/commands
-- Ensured stripped artifacts are not reprocessed in the residual pass.
-- Added suffix assignment heuristics for multi-mapping plugins (for example, systems language split by extension/topic signals).
-- Added CLI-integrated external skill merge with gated dedup + manual-review queue.
+- Conversion target is now **Copilot plugin bundles**, not flattened workspace artifacts.
+- Runtime source remains single-source: `wshobson/agents`.
+- Default output root is `./plugins`.
+- For each enabled source plugin, converter emits:
+  - `.github/plugin/plugin.json`
+  - `README.md`
+  - `agents/*.md`
+  - `commands/*.md`
+  - `skills/*/SKILL.md` (+ bundled support folders)
+- Converter now also emits a repository-level marketplace index:
+  - `.github/plugin/marketplace.json`
+  - includes generated plugin list and plugin source paths under `./plugins`
+- `plugin-selection.json` is synced on every run and controls plugin enable/disable.
+- Plugin dependency resolution is enabled:
+  - if enabled plugins reference skills in disabled plugins, provider plugins are auto-enabled
+  - `plugin-selection.json` includes `auto_enabled_due_to_skill_references`
+- Missing local skill references are materialized as placeholders:
+  - missing `references/*`, `assets/*`, `scripts/*` links in `SKILL.md` are created in output
+  - missing sibling `../<skill>/SKILL.md` targets are generated as placeholder skills
 
-## Key files changed
+## Key Files Changed
 
-- `src/copilot_converter/suffix_stripping.py` (new)
-- `src/copilot_converter/processing.py`
 - `src/copilot_converter/builders.py`
+- `src/copilot_converter/processing.py`
+- `src/copilot_converter/app.py`
 - `README.md`
-- `src/copilot_converter/skill_merge.py` (new)
+- `HANDOFF.md`
 
 ## Verification
 
-- `uv run ruff check src/copilot_converter`
-- `uv run mypy src/copilot_converter`
-- Dry run:
-  - `uv run python -m copilot_converter --source /home/toor/code/agents --output /tmp/copilot-converter-test-2 --include-plugins systems-programming,python-development,jvm-languages --overwrite --decision-log /tmp/copilot-converter-test-2/decisions.json`
-  - `uv run python -m copilot_converter --source /home/toor/code/agents --output /tmp/copilot-merge-cli --overwrite --merge-skills-from /home/toor/code/awesome-copilot`
+- Static checks:
+  - `uv run ruff check src/copilot_converter`
+  - `uv run mypy src/copilot_converter`
+- End-to-end generation:
+  - `uv run python -m copilot_converter /home/toor/code/agents --output ./plugins`
 
 ## Notes
 
-- `.github` in target repos is treated as generated output.
-- For plugins with multiple mappings, only matched suffix buckets are emitted; unmatched content stays in residual handling.
+- Overwrite mode is forced in the CLI (`args.overwrite = True`) to keep output deterministic.
+- Commands are normalized as Copilot prompt files (frontmatter ensured, `$ARGUMENTS` converted to `${input:requirements}`).
+- Agent and skill names are normalized to generated file/folder names in frontmatter.

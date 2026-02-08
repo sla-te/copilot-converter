@@ -1,51 +1,96 @@
 # Copilot Converter
 
-Utilities for converting Claude Code agents/plugins into GitHub Copilot (custom agents), prompts (deprecated), instructions and skills.
+Convert `wshobson/agents` Claude plugins into installable Copilot plugin bundles.
 
-## Project layout
+## Source
 
-- `src/copilot_converter/` holds the converter package.
-- Output is written to `<source>/.github/` by default.
+The converter consumes one source repository:
 
-## Conversion flow
+- default: `/home/toor/code/agents`
+- CLI argument: `<agents_source>`
 
-1. **Suffix pass**: mapped plugins are stripped into `*.instructions.md` files keyed by `applyTo` patterns.
-2. **Residual pass**: any skills/commands not consumed in the suffix pass are processed normally.
-3. **No double-processing**: stripped artifacts are excluded from the residual pass.
+## Output Contract
 
-## Optional external skill merge
+Generated output root defaults to `./plugins`.
 
-You can merge additional skill repositories into the generated `.github/skills` set with gated deduplication:
+For each source plugin at `plugins/<plugin_name>/`, the converter emits:
+
+- `plugins/<plugin_name>/.github/plugin/plugin.json`
+- `plugins/<plugin_name>/README.md`
+- `plugins/<plugin_name>/agents/*.md`
+- `plugins/<plugin_name>/commands/*.md`
+- `plugins/<plugin_name>/skills/*/SKILL.md`
+
+Additionally, the converter writes a marketplace index at:
+
+- `.github/plugin/marketplace.json`
+
+This lets you register the current repository as a Copilot CLI marketplace.
+
+Skill support folders are preserved when present:
+
+- `assets/`
+- `references/`
+- `scripts/`
+- `examples/`
+- `resources/`
+
+If a generated `SKILL.md` references missing local relative files, placeholder files are created so links resolve.
+
+## Plugin Selection
+
+On every run, the app syncs `plugin-selection.json` in the workspace root.
+
+- Newly discovered plugins are added with `true`
+- Existing `true`/`false` toggles are preserved
+- Plugins referenced by enabled plugins' `SKILL.md` dependency links are auto-enabled
+- `auto_enabled_due_to_skill_references` records auto-enabled plugins
+
+## Usage
+
+Run with default source and default output (`./plugins`):
 
 ```bash
-uv run python -m copilot_converter \
-  --source /path/to/agents \
-  --output /path/to/repo/.github \
-  --overwrite \
-  --merge-skills-from /path/to/awesome-copilot
+uv run python -m copilot_converter
 ```
 
-Useful flags:
+Run with explicit source:
 
-- `--merge-skills-report` custom merge report path (default `<output>/skills-merge-report.json`)
-- `--merge-skills-auto-dedupe-threshold` high-confidence duplicate threshold (default `0.88`)
-- `--merge-skills-manual-review-threshold` ambiguous overlap threshold (default `0.55`)
-- `--merge-skills-import-manual-review` import ambiguous items too (default off)
+```bash
+uv run python -m copilot_converter /home/toor/code/agents
+```
 
-## Getting started (uv)
+Run with explicit output:
 
-1. Ensure you have Python 3.13 available.
-2. Install [uv](https://docs.astral.sh/uv/).
-3. (Optional) Sync the dev environment if you want linting/testing tools:
+```bash
+uv run python -m copilot_converter /home/toor/code/agents --output /path/to/plugins
+```
 
-   ```bash
-   uv sync --group dev
-   ```
+Optional flags:
 
-4. Run the converter:
+- `--decision-log <path>` writes JSON conversion metadata
 
-   ```bash
-   uv run python -m copilot_converter --help
-   ```
+## Marketplace Usage
 
-uv will create and manage `.venv/` and `uv.lock` automatically. Check both into version control once generated.
+After generation and pushing this repository to GitHub:
+
+```bash
+copilot plugin marketplace add github/<org>/<repo>
+copilot plugin marketplace browse <marketplace-name>
+copilot plugin install <plugin-name>@<marketplace-name>
+```
+
+For local testing without pushing:
+
+```bash
+copilot plugin marketplace add /absolute/path/to/this/repo
+```
+
+## Validation
+
+```bash
+uv sync --group dev
+uv run ruff check src/copilot_converter
+uv run mypy src/copilot_converter
+uv run python -m copilot_converter /home/toor/code/agents --output ./plugins
+```

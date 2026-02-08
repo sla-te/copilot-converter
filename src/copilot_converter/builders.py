@@ -1,13 +1,9 @@
 import json
+import re
 import shutil
 from pathlib import Path
 
-from .constants import (
-    ARGUMENTS_TOKEN,
-    FRONTMATTER_DELIM,
-    PROMPT_INPUT_TOKEN,
-    SKILL_GLOB,
-)
+from .constants import ARGUMENTS_TOKEN, FRONTMATTER_DELIM, PROMPT_INPUT_TOKEN, SKILL_GLOB
 from .file_ops import read_text, write_text
 from .frontmatter import (
     extract_intro,
@@ -18,71 +14,6 @@ from .frontmatter import (
 )
 from .persona import safe_preview
 
-
-def build_agent_file(agent_path: Path, destination: Path) -> None:
-    content = read_text(agent_path)
-    split = split_frontmatter(content)
-    meta = parse_simple_frontmatter(split.frontmatter)
-
-    name = meta.get("name", agent_path.stem)
-    description = meta.get("description", "Custom agent")
-
-    frontmatter = "\n".join(
-        [
-            FRONTMATTER_DELIM,
-            f"name: {yaml_quote(name)}",
-            f"description: {yaml_quote(sanitize_description(description))}",
-            FRONTMATTER_DELIM,
-            "",
-        ]
-    )
-
-    write_text(destination, frontmatter + split.body.lstrip())
-
-
-def build_enhanced_prompt_file(
-    command_path: Path,
-    destination: Path,
-    plugin_name: str,
-    agent_persona: str | None,
-    skill_links_block: str | None,
-) -> None:
-    content = read_text(command_path)
-    intro = extract_intro(content, command_path.stem)
-
-    prompt_name = f"{plugin_name}-{command_path.stem}"
-    description = sanitize_description(intro)
-
-    if ARGUMENTS_TOKEN in content:
-        body = content.replace(ARGUMENTS_TOKEN, PROMPT_INPUT_TOKEN)
-    else:
-        body = content
-
-    frontmatter_lines = [
-        FRONTMATTER_DELIM,
-        f"name: {yaml_quote(prompt_name)}",
-        f"description: {yaml_quote(description)}",
-        f"argument-hint: {yaml_quote('requirements')}",
-        FRONTMATTER_DELIM,
-        "",
-    ]
-    frontmatter = "\n".join(frontmatter_lines)
-
-    parts = []
-    if agent_persona:
-        parts.append("# Expert Context")
-        parts.append(f"> Acting as expert for: {plugin_name}\n")
-        parts.append(agent_persona.strip())
-        parts.append("\n")
-
-    if skill_links_block:
-        parts.append(skill_links_block)
-        parts.append("\n")
-
-    parts.append(body.strip())
-    write_text(destination, frontmatter + "\n".join(parts))
-
-
 SUPPORT_DIR_NAMES = (
     "assets",
     "references",
@@ -91,146 +22,247 @@ SUPPORT_DIR_NAMES = (
     "resources",
 )
 
+_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+
+
+def _ensure_trailing_newline(content: str) -> str:
+    return content if content.endswith("\n") else content + "\n"
+
+
+def _replace_or_add_name(frontmatter: str, name: str) -> str:
+    updated_lines: list[str] = []
+    replaced = False
+    for line in frontmatter.splitlines():
+        if not replaced and line.strip().startswith("name:"):
+            updated_lines.append(f"name: {yaml_quote(name)}")
+            replaced = True
+            continue
+        updated_lines.append(line)
+    if not replaced:
+        updated_lines.insert(0, f"name: {yaml_quote(name)}")
+    return "\n".join(updated_lines)
+
+
+def _frontmatter_has_key(frontmatter: str, key: str) -> bool:
+    needle = f"{key}:"
+    for line in frontmatter.splitlines():
+        if line.strip().startswith(needle):
+            return True
+    return False
+
+
+def _append_frontmatter_key(frontmatter: str, key: str, value: str) -> str:
+    lines = frontmatter.splitlines()
+    lines.append(f"{key}: {yaml_quote(value)}")
+    return "\n".join(lines)
+
+
+def _ensure_frontmatter_name(content: str, name: str) -> str:
+    split = split_frontmatter(content)
+    if split.frontmatter is None:
+        rendered = "\n".join(
+            [
+                FRONTMATTER_DELIM,
+                f"name: {yaml_quote(name)}",
+                FRONTMATTER_DELIM,
+                "",
+                split.body.strip(),
+            ]
+        )
+        return _ensure_trailing_newline(rendered)
+
+    updated_frontmatter = _replace_or_add_name(split.frontmatter, name)
+    rendered = "\n".join(
+        [
+            FRONTMATTER_DELIM,
+            updated_frontmatter,
+            FRONTMATTER_DELIM,
+            "",
+            split.body.strip(),
+        ]
+    )
+    return _ensure_trailing_newline(rendered)
+
+
+def build_agent_file(agent_path: Path, destination: Path) -> None:
+    """Copy plugin agent files for Copilot plugin output."""
+    generated_name = destination.stem
+    content = read_text(agent_path)
+    write_text(destination, _ensure_frontmatter_name(content, generated_name))
+
+
+def _ensure_prompt_header(command_path: Path, content: str, prompt_name: str) -> str:
+    split = split_frontmatter(content)
+
+    if split.frontmatter is not None:
+        metadata = parse_simple_frontmatter(split.frontmatter)
+        description = metadata.get("description") or sanitize_description(extract_intro(split.body, command_path.stem))
+        updated_frontmatter = _replace_or_add_name(split.frontmatter, prompt_name)
+        if not _frontmatter_has_key(updated_frontmatter, "description"):
+            updated_frontmatter = _append_frontmatter_key(updated_frontmatter, "description", description)
+        if ARGUMENTS_TOKEN in split.body and not _frontmatter_has_key(updated_frontmatter, "argument-hint"):
+            updated_frontmatter = _append_frontmatter_key(updated_frontmatter, "argument-hint", "requirements")
+        body = split.body.replace(ARGUMENTS_TOKEN, PROMPT_INPUT_TOKEN).strip()
+        return _ensure_trailing_newline(
+            "\n".join(
+                [
+                    FRONTMATTER_DELIM,
+                    updated_frontmatter,
+                    FRONTMATTER_DELIM,
+                    "",
+                    body,
+                ]
+            )
+        )
+
+    intro = extract_intro(content, command_path.stem)
+    description = sanitize_description(intro)
+    body = content.replace(ARGUMENTS_TOKEN, PROMPT_INPUT_TOKEN)
+
+    frontmatter_lines = [
+        FRONTMATTER_DELIM,
+        f"name: {yaml_quote(prompt_name)}",
+        f"description: {yaml_quote(description)}",
+    ]
+    if ARGUMENTS_TOKEN in content:
+        frontmatter_lines.append(f"argument-hint: {yaml_quote('requirements')}")
+    frontmatter_lines.extend([FRONTMATTER_DELIM, ""])
+
+    rendered = "\n".join(frontmatter_lines + [body.strip()])
+    return _ensure_trailing_newline(rendered)
+
+
+def build_enhanced_prompt_file(command_path: Path, destination: Path) -> None:
+    content = read_text(command_path)
+    prompt_name = destination.stem
+    rendered = _ensure_prompt_header(command_path, content, prompt_name)
+    write_text(destination, rendered)
+
 
 def copy_support_dirs(source_skill_dir: Path, destination_dir: Path) -> None:
     for name in SUPPORT_DIR_NAMES:
         source_dir = source_skill_dir / name
         if not source_dir.exists() or not source_dir.is_dir():
             continue
-        destination = destination_dir / name
-        shutil.copytree(source_dir, destination, dirs_exist_ok=True)
+        shutil.copytree(source_dir, destination_dir / name, dirs_exist_ok=True)
 
 
-def build_skill_file(skill_path: Path, destination: Path, plugin_name: str) -> None:
-    content = read_text(skill_path)
-    split = split_frontmatter(content)
-    meta = parse_simple_frontmatter(split.frontmatter)
+def _is_relative_link_target(value: str) -> bool:
+    if not value:
+        return False
+    if value.startswith(("#", "/", "${", "mailto:")):
+        return False
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", value):
+        return False
+    return True
 
-    original_name = meta.get("name", skill_path.parent.name)
-    description = meta.get("description", "")
 
-    prefixed_name = f"{plugin_name}-{original_name}"
-    description = sanitize_description(description)
-    if description:
-        description = f"{description} (Plugin: {plugin_name})"
-    else:
-        description = f"Plugin: {plugin_name}"
+def _extract_relative_link_targets(markdown: str) -> set[str]:
+    targets: set[str] = set()
+    for raw_target in _MARKDOWN_LINK_RE.findall(markdown):
+        token = raw_target.strip().split()[0]
+        path_token = token.split("#", 1)[0]
+        if _is_relative_link_target(path_token):
+            targets.add(path_token)
+    return targets
 
-    frontmatter = "\n".join(
-        [
-            FRONTMATTER_DELIM,
-            f"name: {yaml_quote(prefixed_name)}",
-            f"description: {yaml_quote(description)}",
-            FRONTMATTER_DELIM,
-            "",
-        ]
+
+def _placeholder_content(
+    target: Path,
+    source_skill_path: Path,
+    link_target: str,
+) -> str:
+    note = (
+        f"This file was generated automatically because `{source_skill_path}` references "
+        f"`{link_target}`, but the source repository did not provide that file."
     )
-
-    write_text(destination, frontmatter + split.body.lstrip())
-    copy_support_dirs(skill_path.parent, destination.parent)
-
-
-def build_instruction_file(
-    plugin_path: Path,
-    output_dir: Path,
-    output_name: str,
-    apply_to: str | None,
-    agent_persona: str | None,
-    skill_files: list[Path] | None = None,
-) -> Path | None:
-    if skill_files is None:
-        skills_dir = plugin_path / "skills"
-        files = sorted(skills_dir.glob(SKILL_GLOB), key=lambda p: p.parent.name) if skills_dir.exists() else []
-    else:
-        files = sorted(skill_files, key=lambda p: p.parent.name)
-
-    if not files and not apply_to:
-        return None
-
-    plugin_name = plugin_path.name
-    content_parts = []
-
-    if apply_to:
-        content_parts.append(f"---\napplyTo: {yaml_quote(apply_to)}\n---\n")
-
-    content_parts.append(f"# {plugin_name.replace('-', ' ').title()} Guidelines\n")
-
-    if agent_persona:
-        content_parts.append(f"\n{agent_persona.strip()}\n")
-
-    content_parts.append(f"\nThese guidelines provide practices for {plugin_name.replace('-', ' ')}.\n")
-
-    for skill_file in files:
-        skill_content = read_text(skill_file)
-        split = split_frontmatter(skill_content)
-        body = split.body
-
-        skill_name = skill_file.parent.name.replace("-", " ").title()
-        content_parts.append(f"\n## {skill_name}\n")
-        content_parts.append(body.strip())
-        content_parts.append("\n")
-
-    ext = ".instructions.md" if apply_to else ".md"
-    output_path = output_dir / f"{output_name}{ext}"
-
-    if len(content_parts) > 3:
-        write_text(output_path, "\n".join(content_parts))
-        return output_path
-    return None
-
-
-def create_instruction_outputs(
-    plugin_path: Path,
-    instructions_dir: Path,
-    entries: list,
-    agent_persona: str | None,
-    skill_files: list[Path] | None = None,
-) -> list[str]:
-    outputs: list[str] = []
-    for entry in entries:
-        created = build_instruction_file(
-            plugin_path,
-            instructions_dir,
-            entry.name,
-            entry.apply_to,
-            agent_persona,
-            skill_files,
+    if target.name == "SKILL.md":
+        folder_name = target.parent.name
+        return "\n".join(
+            [
+                FRONTMATTER_DELIM,
+                f"name: {yaml_quote(folder_name)}",
+                f"description: {yaml_quote('Placeholder skill generated from missing source reference.')}",
+                FRONTMATTER_DELIM,
+                "",
+                "# Placeholder Skill",
+                "",
+                note,
+                "",
+            ]
         )
-        if created:
-            outputs.append(str(created))
-    return outputs
+    if target.suffix in {".md", ".markdown"}:
+        return "\n".join(
+            [
+                "# Placeholder",
+                "",
+                note,
+                "",
+            ]
+        )
+    if target.suffix in {".yml", ".yaml"}:
+        return f"# Placeholder generated by converter\n# {note}\n"
+    if target.suffix == ".xml":
+        return f"<!-- Placeholder generated by converter: {note} -->\n"
+    if target.suffix == ".sh":
+        return "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "# Placeholder generated by converter.",
+                f"# {note}",
+                "exit 0",
+                "",
+            ]
+        )
+    return f"Placeholder generated by converter.\n{note}\n"
 
 
-def create_skill_output(
+def _materialize_missing_local_links(
+    destination: Path,
+    skill_markdown: str,
+    source_skill_path: Path,
+) -> None:
+    skill_root = destination.parent
+    skills_root = skill_root.parent
+    for link_target in sorted(_extract_relative_link_targets(skill_markdown)):
+        resolved_target = (skill_root / link_target).resolve()
+        if resolved_target.exists():
+            continue
+        try:
+            resolved_target.relative_to(skills_root.resolve())
+        except ValueError:
+            continue
+        placeholder = _placeholder_content(resolved_target, source_skill_path, link_target)
+        write_text(resolved_target, _ensure_trailing_newline(placeholder))
+
+
+def build_skill_file(skill_path: Path, destination: Path) -> None:
+    """Copy plugin skill files and preserve bundled skill resources."""
+    generated_name = destination.parent.name
+    content = read_text(skill_path)
+    rendered_skill = _ensure_frontmatter_name(content, generated_name)
+    write_text(destination, rendered_skill)
+    copy_support_dirs(skill_path.parent, destination.parent)
+    _materialize_missing_local_links(destination, rendered_skill, skill_path)
+
+
+def build_commands_for_plugin(
     plugin_path: Path,
-    skills_dir: Path,
-    plugin_name: str,
-    agent_persona: str | None,
-    skill_files: list[Path] | None = None,
-) -> list[str]:
-    output_dir = skills_dir / plugin_name
-    created = build_instruction_file(plugin_path, output_dir, "SKILL", None, agent_persona, skill_files)
-    return [str(created)] if created else []
-
-
-def build_prompts_for_plugin(
-    plugin_path: Path,
-    prompts_dir: Path,
-    plugin_name: str,
-    agent_persona: str | None,
+    commands_dir: Path,
     command_files: list[Path] | None = None,
 ) -> tuple[list[str], list[dict[str, str]]]:
-    prompts: list[str] = []
+    outputs: list[str] = []
     previews: list[dict[str, str]] = []
     files = (
         sorted(command_files, key=lambda p: p.name)
         if command_files is not None
         else sorted((plugin_path / "commands").glob("*.md"), key=lambda p: p.name)
     )
+
     for command_file in files:
-        destination = prompts_dir / f"{plugin_name}__{command_file.stem}.prompt.md"
-        build_enhanced_prompt_file(command_file, destination, plugin_name, agent_persona, None)
-        prompts.append(str(destination))
+        destination = commands_dir / f"{command_file.stem}.md"
+        build_enhanced_prompt_file(command_file, destination)
+        outputs.append(str(destination))
         previews.append(
             {
                 "name": command_file.name,
@@ -238,20 +270,8 @@ def build_prompts_for_plugin(
                 "preview": safe_preview(read_text(command_file)),
             }
         )
-    return prompts, previews
 
-
-def collect_command_previews(plugin_path: Path) -> list[dict[str, str]]:
-    previews: list[dict[str, str]] = []
-    for command_file in (plugin_path / "commands").glob("*.md"):
-        previews.append(
-            {
-                "name": command_file.name,
-                "path": str(command_file),
-                "preview": safe_preview(read_text(command_file)),
-            }
-        )
-    return previews
+    return outputs, previews
 
 
 def collect_skill_previews(plugin_path: Path) -> list[dict[str, str]]:
@@ -268,49 +288,76 @@ def collect_skill_previews(plugin_path: Path) -> list[dict[str, str]]:
     return previews
 
 
-def write_copilot_instructions(output_root: Path) -> None:
-    instructions_path = output_root / "copilot-instructions.md"
-
-    block = """
-## Custom Agent Library
-
-This repository contains a library of custom agents, prompts, and skills converted from Claude plugins.
-
-**Locations:**
-- `.github/instructions/` — File-specific guidelines auto-loaded by Copilot.
-- `.github/skills/` — General knowledge base and documentation (reference using @file).
-- `.github/prompts/` — Reusable prompt files (run with `/` in chat).
-
-**Guidance:**
-- Context is auto-loaded for specific file types (e.g. Python).
-- For general questions (Git, Architecture), reference the file in
-`.github/skills/` (e.g. `@workspace #file skills/git.md`).
-"""
-
-    if not instructions_path.exists():
-        content = f"# Copilot Instructions\n{block}"
-        write_text(instructions_path, content)
-        return
-
-    current_content = read_text(instructions_path)
-    if ".github/instructions/" in current_content:
-        return
-
-    new_content = current_content.rstrip() + "\n" + block
-    write_text(instructions_path, new_content)
-
-
-def write_vscode_settings(repo_root: Path) -> None:
-    settings_path = repo_root / ".vscode" / "settings.json"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-
-    settings = {}
-    if settings_path.exists():
+def read_source_plugin_metadata(plugin_path: Path) -> dict[str, object]:
+    metadata_path = plugin_path / ".claude-plugin" / "plugin.json"
+    if metadata_path.exists():
         try:
-            settings = json.loads(read_text(settings_path))
+            return json.loads(read_text(metadata_path))
         except json.JSONDecodeError:
-            settings = {}
+            return {}
+    return {}
 
-    if "chat.promptFiles" not in settings:
-        settings["chat.promptFiles"] = True
-        write_text(settings_path, json.dumps(settings, indent=2, sort_keys=True) + "\n")
+
+def write_plugin_manifest(plugin_path: Path, destination_plugin_dir: Path) -> dict[str, object]:
+    source_metadata = read_source_plugin_metadata(plugin_path)
+
+    manifest: dict[str, object] = {
+        "name": str(source_metadata.get("name") or plugin_path.name),
+        "description": str(source_metadata.get("description") or f"Converted plugin from {plugin_path.name}."),
+        "version": str(source_metadata.get("version") or "1.0.0"),
+        "author": source_metadata.get("author") or {"name": "copilot-converter"},
+        "repository": source_metadata.get("repository") or "https://github.com/wshobson/agents",
+        "license": source_metadata.get("license") or "MIT",
+    }
+
+    manifest_path = destination_plugin_dir / ".github" / "plugin" / "plugin.json"
+    write_text(manifest_path, json.dumps(manifest, indent=2, sort_keys=False) + "\n")
+    return manifest
+
+
+def _render_markdown_table(title: str, rows: list[tuple[str, str]]) -> list[str]:
+    lines: list[str] = [f"## {title}", ""]
+    if not rows:
+        lines.append("_None_")
+        lines.append("")
+        return lines
+
+    lines.extend(["| Name | Description |", "|---|---|"])
+    for name, description in rows:
+        cleaned_description = description.replace("|", "\\|").strip() or "-"
+        lines.append(f"| `{name}` | {cleaned_description} |")
+    lines.append("")
+    return lines
+
+
+def write_plugin_readme(
+    plugin_dir: Path,
+    manifest: dict[str, object],
+    command_names: list[str],
+    agent_names: list[str],
+    skill_names: list[str],
+) -> None:
+    plugin_name = str(manifest.get("name", plugin_dir.name))
+    description = str(manifest.get("description", ""))
+
+    command_rows = [(name, f"/{plugin_name}:{name} prompt") for name in command_names]
+    agent_rows = [(name, "Custom Copilot agent") for name in agent_names]
+    skill_rows = [(name, "Agent Skill") for name in skill_names]
+
+    lines: list[str] = [
+        f"# {plugin_name}",
+        "",
+        description,
+        "",
+        "Converted from Claude plugin source to Copilot plugin layout.",
+        "",
+    ]
+    lines.extend(_render_markdown_table("Commands", command_rows))
+    lines.extend(_render_markdown_table("Agents", agent_rows))
+    lines.extend(_render_markdown_table("Skills", skill_rows))
+
+    repository = str(manifest.get("repository", ""))
+    if repository:
+        lines.extend(["## Source", "", f"- `{repository}`", ""])
+
+    write_text(plugin_dir / "README.md", "\n".join(lines))

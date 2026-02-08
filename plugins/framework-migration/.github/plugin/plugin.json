@@ -1,0 +1,11 @@
+{
+  "name": "framework-migration",
+  "description": "Framework updates, migration planning, and architectural transformation workflows",
+  "version": "1.3.0",
+  "author": {
+    "name": "Seth Hobson",
+    "email": "seth@major7apps.com"
+  },
+  "repository": "https://github.com/wshobson/agents",
+  "license": "MIT"
+}

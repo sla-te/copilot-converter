@@ -1,0 +1,11 @@
+{
+  "name": "python-development",
+  "description": "Modern Python development with Python 3.12+, Django, FastAPI, async patterns, and production best practices",
+  "version": "1.2.1",
+  "author": {
+    "name": "Seth Hobson",
+    "email": "seth@major7apps.com"
+  },
+  "repository": "https://github.com/wshobson/agents",
+  "license": "MIT"
+}

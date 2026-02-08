@@ -1,0 +1,11 @@
+{
+  "name": "codebase-cleanup",
+  "description": "Technical debt reduction, dependency updates, and code refactoring automation",
+  "version": "1.2.0",
+  "author": {
+    "name": "Seth Hobson",
+    "email": "seth@major7apps.com"
+  },
+  "repository": "https://github.com/wshobson/agents",
+  "license": "MIT"
+}

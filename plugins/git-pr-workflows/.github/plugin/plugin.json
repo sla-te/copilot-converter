@@ -1,0 +1,11 @@
+{
+  "name": "git-pr-workflows",
+  "description": "Git workflow automation, pull request enhancement, and team onboarding processes",
+  "version": "1.3.0",
+  "author": {
+    "name": "Seth Hobson",
+    "email": "seth@major7apps.com"
+  },
+  "repository": "https://github.com/wshobson/agents",
+  "license": "MIT"
+}

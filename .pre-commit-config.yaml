@@ -32,7 +32,8 @@ repos:
     rev: v0.47.0
     hooks:
       - id: markdownlint-fix
-        args: ["--config", ".markdownlint"]
+        args: ["--config", ".markdownlint", "--ignore-path", ".markdownlintignore"]
+        exclude: ^\.github/
 
   - repo: https://github.com/crate-ci/typos
     rev: v1.43.3
