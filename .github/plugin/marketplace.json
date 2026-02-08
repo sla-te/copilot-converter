@@ -95,6 +95,12 @@
       "version": "1.2.0"
     },
     {
+      "name": "copilot-converter",
+      "source": "./plugins/copilot-converter",
+      "description": "Meta prompts that help you discover and generate curated GitHub Copilot agents, collections, instructions, prompts, and skills.",
+      "version": "1.0.0"
+    },
+    {
       "name": "database-design",
       "source": "./plugins/database-design",
       "description": "Database architecture, schema design, and SQL optimization for production systems",

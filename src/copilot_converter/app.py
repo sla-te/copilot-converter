@@ -3,6 +3,7 @@ from pathlib import Path
 
 from .processing import (
     iter_plugin_dirs,
+    process_awesome_meta_agent,
     process_plugins,
     resolve_output_root,
     resolve_source,
@@ -23,6 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to wshobson/agents (default: /home/toor/code/agents)",
     )
     parser.add_argument(
+        "awesome_source",
+        nargs="?",
+        default="/home/toor/code/awesome-copilot",
+        help="Path to github/awesome-copilot (default: /home/toor/code/awesome-copilot)",
+    )
+    parser.add_argument(
         "--output",
         default=str(Path.cwd() / "plugins"),
         help="Output directory for generated Copilot plugins (default: ./plugins)",
@@ -41,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     args.overwrite = True
 
     agents_source = resolve_source(args.agents_source)
+    awesome_source = resolve_source(args.awesome_source)
     output_root = resolve_output_root(args.output)
     plugin_config_path = Path.cwd() / "plugin-selection.json"
 
@@ -48,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
     plugin_dirs = list(iter_plugin_dirs(agents_source, enabled_plugins))
 
     decisions = process_plugins(plugin_dirs, output_root, args)
+    awesome_decision = process_awesome_meta_agent(awesome_source, output_root)
+    if awesome_decision is not None:
+        decisions.append(awesome_decision)
     write_marketplace_manifest(Path.cwd(), output_root)
 
     if args.decision_log:

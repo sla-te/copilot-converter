@@ -7,6 +7,7 @@ from typing import Iterable
 from .builders import (
     build_agent_file,
     build_commands_for_plugin,
+    build_enhanced_prompt_file,
     build_skill_file,
     collect_skill_previews,
     write_plugin_manifest,
@@ -15,8 +16,102 @@ from .builders import (
 from .constants import SKILL_GLOB
 from .file_ops import ensure_empty_dir, load_json, read_text, write_text
 from .models import DecisionRecord
+from .persona import safe_preview
 
 _SKILL_LINK_RE = re.compile(r"\.\./([a-z0-9][a-z0-9_-]*)/SKILL\.md")
+
+
+def _marketplace_suggestion_command_docs() -> dict[str, dict[str, str]]:
+    return {
+        "suggest-copilot-converter-agents": {
+            "description": (
+                "Suggest relevant Copilot custom agents from this repository marketplace "
+                "(translated from Claude plugins)."
+            ),
+            "title": "Suggest Marketplace Copilot Agents",
+            "target": "`plugins/*/agents/*.md`",
+            "local_target": "`.github/agents/*.agent.md`",
+        },
+        "suggest-copilot-converter-collections": {
+            "description": (
+                "Suggest relevant plugin collections from this repository marketplace "
+                "(translated from Claude plugins)."
+            ),
+            "title": "Suggest Marketplace Plugin Collections",
+            "target": "`plugins/*`",
+            "local_target": "installed plugins and local workspace capabilities",
+        },
+        "suggest-copilot-converter-instructions": {
+            "description": (
+                "Suggest relevant guidance assets from this repository marketplace "
+                "(skills/instructions translated from Claude plugins)."
+            ),
+            "title": "Suggest Marketplace Instructions",
+            "target": "`plugins/*/skills/*/SKILL.md`",
+            "local_target": "`.github/instructions/*.instructions.md`",
+        },
+        "suggest-copilot-converter-prompts": {
+            "description": (
+                "Suggest relevant prompt files from this repository marketplace "
+                "(translated from Claude plugins)."
+            ),
+            "title": "Suggest Marketplace Prompts",
+            "target": "`plugins/*/commands/*.md`",
+            "local_target": "`.github/prompts/*.prompt.md`",
+        },
+    }
+
+
+def _render_marketplace_suggestion_command(
+    *,
+    name: str,
+    description: str,
+    title: str,
+    target: str,
+    local_target: str,
+) -> str:
+    return "\n".join(
+        [
+            "---",
+            f'name: "{name}"',
+            'agent: "agent"',
+            f'description: "{description}"',
+            "---",
+            "",
+            f"# {title}",
+            "",
+            "Analyze current repository context and suggest relevant assets from this repository marketplace.",
+            "",
+            "Do not suggest from upstream `github/awesome-copilot` directly for this command.",
+            "",
+            "## Source of Truth",
+            "",
+            "- `.github/plugin/marketplace.json`",
+            f"- {target}",
+            "",
+            "## Process",
+            "",
+            "1. Read `.github/plugin/marketplace.json` and enumerate available plugins.",
+            f"2. Scan {target} and extract names and descriptions.",
+            "3. Analyze current repository context and recent chat goals.",
+            f"4. Compare against existing local assets in {local_target} to avoid duplicates.",
+            "5. Rank the best fits and explain why each is relevant now.",
+            "6. Wait for explicit user confirmation before performing any install/update action.",
+            "",
+            "## Output Format",
+            "",
+            "| Marketplace Plugin | Asset | Description | Why relevant | Install command |",
+            "|---|---|---|---|---|",
+            (
+                "| `plugin-name` | `asset-name` | Short summary | "
+                "Specific reason tied to current task | "
+                "`copilot plugin install <plugin-name>@<marketplace-name>` |"
+            ),
+            "",
+            "If no strong matches exist, explicitly say so and explain the gap.",
+            "",
+        ]
+    )
 
 
 def iter_plugin_dirs(source: Path, plugin_filter: set[str] | None) -> Iterable[Path]:
@@ -258,6 +353,102 @@ def process_plugins(plugin_dirs: Iterable[Path], output_root: Path, args: argpar
         )
 
     return decisions
+
+
+def process_awesome_meta_agent(awesome_source: Path, output_root: Path) -> DecisionRecord | None:
+    source_plugin_name = "awesome-copilot"
+    plugin_name = "copilot-converter"
+    agent_source = awesome_source / "agents" / "meta-agentic-project-scaffold.agent.md"
+    if not agent_source.exists():
+        return None
+
+    plugin_output_dir = output_root / plugin_name
+    agents_dir = plugin_output_dir / "agents"
+    commands_dir = plugin_output_dir / "commands"
+    skills_dir = plugin_output_dir / "skills"
+    for directory in (agents_dir, commands_dir, skills_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    source_manifest_path = awesome_source / "plugins" / source_plugin_name / ".github" / "plugin" / "plugin.json"
+    source_manifest = load_json(source_manifest_path) if source_manifest_path.exists() else {}
+    manifest: dict[str, object] = {
+        "name": plugin_name,
+        "description": str(
+            source_manifest.get("description")
+            or "Meta prompts that help discover and scaffold Copilot workflows from awesome-copilot."
+        ),
+        "version": str(source_manifest.get("version") or "1.0.0"),
+        "author": source_manifest.get("author") or {"name": "Awesome Copilot Community"},
+        "repository": source_manifest.get("repository") or "https://github.com/github/awesome-copilot",
+        "license": source_manifest.get("license") or "MIT",
+    }
+    write_text(
+        plugin_output_dir / ".github" / "plugin" / "plugin.json",
+        json.dumps(manifest, indent=2, sort_keys=False) + "\n",
+    )
+
+    agent_destination = agents_dir / "meta-agentic-project-scaffold.md"
+    build_agent_file(agent_source, agent_destination)
+
+    prompt_outputs: list[str] = []
+    command_names: list[str] = []
+    for command_name, command_doc in _marketplace_suggestion_command_docs().items():
+        rendered = _render_marketplace_suggestion_command(
+            name=command_name,
+            description=command_doc["description"],
+            title=command_doc["title"],
+            target=command_doc["target"],
+            local_target=command_doc["local_target"],
+        )
+        prompt_destination = commands_dir / f"{command_name}.md"
+        write_text(prompt_destination, rendered)
+        prompt_outputs.append(str(prompt_destination))
+        command_names.append(command_name)
+
+    # Keep create-readme available as a direct convenience prompt.
+    create_readme_source = awesome_source / "prompts" / "create-readme.prompt.md"
+    if create_readme_source.exists() and "create-readme" not in command_names:
+        prompt_destination = commands_dir / "create-readme.md"
+        build_enhanced_prompt_file(create_readme_source, prompt_destination)
+        prompt_outputs.append(str(prompt_destination))
+        command_names.append("create-readme")
+
+    write_plugin_readme(
+        plugin_dir=plugin_output_dir,
+        manifest=manifest,
+        command_names=command_names,
+        agent_names=["meta-agentic-project-scaffold"],
+        skill_names=[],
+    )
+
+    outputs = [
+        str(plugin_output_dir / ".github" / "plugin" / "plugin.json"),
+        str(plugin_output_dir / "README.md"),
+        str(agent_destination),
+        *prompt_outputs,
+    ]
+
+    return DecisionRecord(
+        plugin=plugin_name,
+        classification="copilot-plugin",
+        mapping_entries=[],
+        outputs=outputs,
+        prompts=prompt_outputs,
+        agents=["meta-agentic-project-scaffold"],
+        commands=command_names,
+        skills=[],
+        plugin_path=str(agent_source),
+        selected_agent="meta-agentic-project-scaffold",
+        agent_persona_preview=safe_preview(read_text(agent_source)),
+        command_previews=[],
+        skill_previews=[],
+        notes="Injected from github/awesome-copilot.",
+        reasons=[
+            "inject_copilot_converter_meta_plugin",
+            "add_meta_agentic_project_scaffold_to_marketplace",
+        ],
+        command_neighbors=[],
+    )
 
 
 def _slugify_marketplace_name(name: str) -> str:

@@ -1,13 +1,17 @@
 # Copilot Converter
 
-Convert `wshobson/agents` Claude plugins into installable Copilot plugin bundles.
+Convert plugin sources into installable Copilot plugin bundles.
 
 ## Source
 
-The converter consumes one source repository:
+The converter consumes two source repositories:
 
-- default: `/home/toor/code/agents`
-- CLI argument: `<agents_source>`
+- `wshobson/agents` (default: `/home/toor/code/agents`) as the primary plugin source
+- `github/awesome-copilot` (default: `/home/toor/code/awesome-copilot`) for the `meta-agentic-project-scaffold` agent
+
+CLI positional arguments:
+
+- `<agents_source> <awesome_source>`
 
 ## Output Contract
 
@@ -26,6 +30,10 @@ Additionally, the converter writes a marketplace index at:
 - `.github/plugin/marketplace.json`
 
 This lets you register the current repository as a Copilot CLI marketplace.
+
+The generated market also includes a `copilot-converter` plugin containing:
+
+- `agents/meta-agentic-project-scaffold.md`
 
 Skill support folders are preserved when present:
 
@@ -48,22 +56,22 @@ On every run, the app syncs `plugin-selection.json` in the workspace root.
 
 ## Usage
 
-Run with default source and default output (`./plugins`):
+Run with default sources and default output (`./plugins`):
 
 ```bash
 uv run python -m copilot_converter
 ```
 
-Run with explicit source:
+Run with explicit sources:
 
 ```bash
-uv run python -m copilot_converter /home/toor/code/agents
+uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot
 ```
 
 Run with explicit output:
 
 ```bash
-uv run python -m copilot_converter /home/toor/code/agents --output /path/to/plugins
+uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot --output /path/to/plugins
 ```
 
 Optional flags:
@@ -92,5 +100,5 @@ copilot plugin marketplace add /absolute/path/to/this/repo
 uv sync --group dev
 uv run ruff check src/copilot_converter
 uv run mypy src/copilot_converter
-uv run python -m copilot_converter /home/toor/code/agents --output ./plugins
+uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot --output ./plugins
 ```

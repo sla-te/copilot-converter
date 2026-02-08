@@ -3,7 +3,9 @@
 ## Current Status
 
 - Conversion target is now **Copilot plugin bundles**, not flattened workspace artifacts.
-- Runtime source remains single-source: `wshobson/agents`.
+- Runtime sources:
+  - `wshobson/agents` for primary plugin conversion
+  - `github/awesome-copilot` to inject the `meta-agentic-project-scaffold` agent
 - Default output root is `./plugins`.
 - For each enabled source plugin, converter emits:
   - `.github/plugin/plugin.json`
@@ -14,6 +16,9 @@
 - Converter now also emits a repository-level marketplace index:
   - `.github/plugin/marketplace.json`
   - includes generated plugin list and plugin source paths under `./plugins`
+- Converter injects an additional generated plugin:
+  - `plugins/copilot-converter`
+  - includes `agents/meta-agentic-project-scaffold.md`
 - `plugin-selection.json` is synced on every run and controls plugin enable/disable.
 - Plugin dependency resolution is enabled:
   - if enabled plugins reference skills in disabled plugins, provider plugins are auto-enabled
@@ -36,7 +41,7 @@
   - `uv run ruff check src/copilot_converter`
   - `uv run mypy src/copilot_converter`
 - End-to-end generation:
-  - `uv run python -m copilot_converter /home/toor/code/agents --output ./plugins`
+  - `uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot --output ./plugins`
 
 ## Notes
 
