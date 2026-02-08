@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import json
 from pathlib import Path
@@ -8,7 +6,6 @@ from typing import Iterable
 from .builders import (
     build_prompts_for_plugin,
     collect_skill_previews,
-    create_instruction_outputs,
     create_skill_output,
     write_copilot_instructions,
     write_vscode_settings,
@@ -26,6 +23,7 @@ from .file_ops import ensure_empty_dir, read_text
 from .mappings import get_mapping_entries
 from .models import DecisionRecord
 from .persona import extract_agent_persona, preview_text
+from .suffix_stripping import strip_suffix_scoped_artifacts
 
 
 def load_marketplace_plugins(source: Path) -> set[str]:
@@ -59,9 +57,7 @@ def resolve_source(source_arg: str) -> Path:
 
 
 def resolve_output_root(source: Path, output_arg: str | None) -> Path:
-    output_root = (
-        Path(output_arg).expanduser().resolve() if output_arg else source / ".github"
-    )
+    output_root = Path(output_arg).expanduser().resolve() if output_arg else source / ".github"
     output_root.mkdir(parents=True, exist_ok=True)
     return output_root
 
@@ -109,14 +105,10 @@ def write_decision_log(path: Path, decisions: list[DecisionRecord]) -> None:
                 "command_neighbors": d.command_neighbors,
             }
         )
-    path.write_text(
-        json.dumps(serializable, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    path.write_text(json.dumps(serializable, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def process_plugin_agents(
-    plugin_path: Path, agents_dir: Path, skip_agents: bool
-) -> None:
+def process_plugin_agents(plugin_path: Path, agents_dir: Path, skip_agents: bool) -> None:
     if skip_agents:
         return
     plugin_name = plugin_path.name
@@ -130,93 +122,67 @@ def process_plugin_agents(
 
 
 def process_plugin_skills(
-    plugin_path: Path, skills_dir: Path, skip_skills: bool
+    plugin_path: Path,
+    skills_dir: Path,
+    skip_skills: bool,
+    skill_files: list[Path] | None = None,
 ) -> None:
     if skip_skills:
         return
     plugin_name = plugin_path.name
-    for skill_file in (plugin_path / "skills").glob(SKILL_GLOB):
+    files = (
+        sorted(skill_files, key=lambda p: p.parent.name)
+        if skill_files is not None
+        else sorted((plugin_path / "skills").glob(SKILL_GLOB), key=lambda p: p.parent.name)
+    )
+    for skill_file in files:
         skill_name = skill_file.parent.name
-        destination = skills_dir / f"{plugin_name}__{skill_name}" / "SKILL.md"
         from copilot_converter.builders import (
             build_skill_file,  # local import to avoid cycle
         )
 
+        skill_output_dir = skills_dir / f"{plugin_name}__{skill_name}"
+        destination = skill_output_dir / "SKILL.md"
         build_skill_file(skill_file, destination, plugin_name)
 
 
-def process_mapped_plugin(
-    plugin_path: Path,
-    instructions_dir: Path,
-    prompts_dir: Path,
-    plugin_name: str,
-    mapping_entries,
-    has_commands: bool,
-    agent_persona: str | None,
-    selected_agent_name: str | None,
-):
-    reasons: list[str] = ["explicit_mapping"]
-    outputs = create_instruction_outputs(
-        plugin_path, instructions_dir, mapping_entries, agent_persona
-    )
-    if outputs:
-        reasons.append("instructions_generated")
-
-    if has_commands:
-        prompts, command_previews = build_prompts_for_plugin(
-            plugin_path, prompts_dir, plugin_name, agent_persona
-        )
-        if prompts:
-            reasons.append("commands_with_mapping_prompts_generated")
-    else:
-        prompts, command_previews = [], []
-
-    return (
-        outputs,
-        prompts,
-        command_previews,
-        agent_persona,
-        selected_agent_name,
-        reasons,
-    )
-
-
-def process_unmapped_plugin(
+def process_remaining_artifacts(
     plugin_path: Path,
     skills_dir: Path,
     prompts_dir: Path,
     plugin_name: str,
-    has_skills: bool,
-    has_commands: bool,
+    skill_files: list[Path],
+    command_files: list[Path],
     agent_persona: str | None,
-    selected_agent_name: str | None,
 ):
     reasons: list[str] = []
 
     outputs: list[str] = []
-    if has_skills:
-        outputs.extend(
-            create_skill_output(plugin_path, skills_dir, plugin_name, agent_persona)
-        )
+    if skill_files:
+        outputs.extend(create_skill_output(plugin_path, skills_dir, plugin_name, agent_persona, skill_files))
         if outputs:
-            reasons.append("skills_generated")
+            reasons.append("remaining_skills_generated")
     else:
-        reasons.append("no_skills_found")
+        reasons.append("no_remaining_skills")
 
     prompts: list[str] = []
     command_previews: list[dict[str, str]] = []
-    if has_commands:
+    if command_files:
         prompts, command_previews = build_prompts_for_plugin(
-            plugin_path, prompts_dir, plugin_name, agent_persona
+            plugin_path,
+            prompts_dir,
+            plugin_name,
+            agent_persona,
+            command_files=command_files,
         )
-        reasons.append("commands_without_mapping_prompts_generated")
+        reasons.append("remaining_commands_prompts_generated")
+    else:
+        reasons.append("no_remaining_commands")
 
     return (
         outputs,
         prompts,
         command_previews,
-        agent_persona,
-        selected_agent_name,
         reasons,
     )
 
@@ -233,16 +199,34 @@ def process_single_plugin(
     skills_dir = output_root / "skills"
 
     mapping_entries = get_mapping_entries(plugin_name)
-    agents = [p.name for p in (plugin_path / "agents").glob("*.md")]
-    commands = [p.name for p in (plugin_path / "commands").glob("*.md")]
-    skills = [p.parent.name for p in (plugin_path / "skills").rglob("SKILL.md")]
+    skill_files = sorted((plugin_path / "skills").glob(SKILL_GLOB), key=lambda p: p.parent.name)
+    command_files = sorted((plugin_path / "commands").glob("*.md"), key=lambda p: p.name)
+    agents = [p.name for p in sorted((plugin_path / "agents").glob("*.md"), key=lambda p: p.name)]
+    commands = [p.name for p in command_files]
+    skills = [p.parent.name for p in skill_files]
     classification = "instruction" if mapping_entries else "skill"
 
     agent_hint = mapping_entries[0].agent_hint if mapping_entries else None
     agent_persona, selected_agent_name = extract_agent_persona(plugin_path, agent_hint)
 
-    has_commands = bool(commands)
-    has_skills = bool(skills)
+    suffix_result = strip_suffix_scoped_artifacts(
+        plugin_path=plugin_path,
+        instructions_dir=instructions_dir,
+        prompts_dir=prompts_dir,
+        mapping_entries=mapping_entries,
+        skill_files=skill_files,
+        command_files=command_files,
+    )
+
+    remaining_skill_files = [path for path in skill_files if path not in suffix_result.consumed_skill_files]
+    remaining_command_files = [path for path in command_files if path not in suffix_result.consumed_command_files]
+
+    process_plugin_skills(
+        plugin_path=plugin_path,
+        skills_dir=skills_dir,
+        skip_skills=not remaining_skill_files,
+        skill_files=remaining_skill_files,
+    )
 
     cmd_neighbors: list[dict[str, object]] = []
     for cmd in commands:
@@ -255,42 +239,24 @@ def process_single_plugin(
             }
         )
 
-    if mapping_entries:
-        (
-            outputs,
-            prompts,
-            command_previews,
-            agent_persona,
-            selected_agent_name,
-            reasons,
-        ) = process_mapped_plugin(
-            plugin_path,
-            instructions_dir,
-            prompts_dir,
-            plugin_name,
-            mapping_entries,
-            has_commands,
-            agent_persona,
-            selected_agent_name,
-        )
-    else:
-        (
-            outputs,
-            prompts,
-            command_previews,
-            agent_persona,
-            selected_agent_name,
-            reasons,
-        ) = process_unmapped_plugin(
-            plugin_path,
-            skills_dir,
-            prompts_dir,
-            plugin_name,
-            has_skills,
-            has_commands,
-            agent_persona,
-            selected_agent_name,
-        )
+    outputs = list(suffix_result.outputs)
+    prompts = list(suffix_result.prompts)
+    command_previews = list(suffix_result.command_previews)
+    reasons = list(suffix_result.reasons)
+
+    remaining_outputs, remaining_prompts, remaining_previews, remaining_reasons = process_remaining_artifacts(
+        plugin_path=plugin_path,
+        skills_dir=skills_dir,
+        prompts_dir=prompts_dir,
+        plugin_name=plugin_name,
+        skill_files=remaining_skill_files,
+        command_files=remaining_command_files,
+        agent_persona=agent_persona,
+    )
+    outputs.extend(remaining_outputs)
+    prompts.extend(remaining_prompts)
+    command_previews.extend(remaining_previews)
+    reasons.extend(remaining_reasons)
 
     if agent_persona is None:
         reasons.append("persona_missing")
@@ -318,14 +284,10 @@ def process_single_plugin(
     )
 
 
-def process_plugins(
-    plugin_dirs: Iterable[Path], output_root: Path, args: argparse.Namespace
-) -> list[DecisionRecord]:
+def process_plugins(plugin_dirs: Iterable[Path], output_root: Path, args: argparse.Namespace) -> list[DecisionRecord]:
     command_docs = build_command_docs(plugin_dirs)
     vectors = compute_tfidf_vectors(command_docs) if command_docs else []
-    neighbor_map = (
-        build_command_neighbors(command_docs, vectors) if command_docs else {}
-    )
+    neighbor_map = build_command_neighbors(command_docs, vectors) if command_docs else {}
     cluster_map = cluster_commands(command_docs, vectors) if command_docs else {}
 
     instructions_dir = output_root / "instructions"
@@ -340,9 +302,7 @@ def process_plugins(
 
     decisions: list[DecisionRecord] = []
     for plugin_path in plugin_dirs:
-        decisions.append(
-            process_single_plugin(plugin_path, output_root, neighbor_map, cluster_map)
-        )
+        decisions.append(process_single_plugin(plugin_path, output_root, neighbor_map, cluster_map))
 
     if args.decision_log and command_docs and vectors and cluster_map:
         cluster_report_path = Path(args.decision_log).with_name("cluster_report.json")
@@ -355,9 +315,7 @@ def process_plugins(
             vectors,
             args.cluster_include_singletons,
         )
-        cluster_prompt_report_path = Path(args.decision_log).with_name(
-            "cluster_prompts_report.json"
-        )
+        cluster_prompt_report_path = Path(args.decision_log).with_name("cluster_prompts_report.json")
         cluster_prompt_report_path.parent.mkdir(parents=True, exist_ok=True)
         cluster_prompt_report_path.write_text(
             json.dumps(cluster_prompt_records, indent=2, sort_keys=True),

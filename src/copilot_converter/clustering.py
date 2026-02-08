@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import math
 from pathlib import Path
@@ -98,9 +96,7 @@ def build_command_neighbors(
     return neighbors
 
 
-def group_cluster_indices(
-    cluster_map: dict[str, int], key_to_index: dict[str, int]
-) -> dict[int, list[int]]:
+def group_cluster_indices(cluster_map: dict[str, int], key_to_index: dict[str, int]) -> dict[int, list[int]]:
     grouped: dict[int, list[int]] = {}
     for key, cid in cluster_map.items():
         idx = key_to_index.get(key)
@@ -110,19 +106,14 @@ def group_cluster_indices(
     return grouped
 
 
-def cluster_top_tokens(
-    indices: list[int], vectors: list[dict[str, float]], top_n: int = 6
-) -> list[str]:
+def cluster_top_tokens(indices: list[int], vectors: list[dict[str, float]], top_n: int = 6) -> list[str]:
     centroid: dict[str, float] = {}
     for idx in indices:
         for tok, val in vectors[idx].items():
             centroid[tok] = centroid.get(tok, 0.0) + val
     for tok in centroid:
         centroid[tok] /= len(indices)
-    return [
-        tok
-        for tok, _ in sorted(centroid.items(), key=lambda x: x[1], reverse=True)[:top_n]
-    ]
+    return [tok for tok, _ in sorted(centroid.items(), key=lambda x: x[1], reverse=True)[:top_n]]
 
 
 def render_cluster_prompt(
@@ -211,9 +202,7 @@ def build_cluster_prompts(
             continue
         if not include_singletons and len(indices) == 1:
             continue
-        prompt_records.append(
-            render_cluster_prompt(output_dir, cid, indices, docs, vectors)
-        )
+        prompt_records.append(render_cluster_prompt(output_dir, cid, indices, docs, vectors))
 
     return prompt_records
 

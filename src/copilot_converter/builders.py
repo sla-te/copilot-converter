@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 import json
+import shutil
 from pathlib import Path
 
 from .constants import (
@@ -84,6 +83,24 @@ def build_enhanced_prompt_file(
     write_text(destination, frontmatter + "\n".join(parts))
 
 
+SUPPORT_DIR_NAMES = (
+    "assets",
+    "references",
+    "scripts",
+    "examples",
+    "resources",
+)
+
+
+def copy_support_dirs(source_skill_dir: Path, destination_dir: Path) -> None:
+    for name in SUPPORT_DIR_NAMES:
+        source_dir = source_skill_dir / name
+        if not source_dir.exists() or not source_dir.is_dir():
+            continue
+        destination = destination_dir / name
+        shutil.copytree(source_dir, destination, dirs_exist_ok=True)
+
+
 def build_skill_file(skill_path: Path, destination: Path, plugin_name: str) -> None:
     content = read_text(skill_path)
     split = split_frontmatter(content)
@@ -110,6 +127,7 @@ def build_skill_file(skill_path: Path, destination: Path, plugin_name: str) -> N
     )
 
     write_text(destination, frontmatter + split.body.lstrip())
+    copy_support_dirs(skill_path.parent, destination.parent)
 
 
 def build_instruction_file(
@@ -118,17 +136,15 @@ def build_instruction_file(
     output_name: str,
     apply_to: str | None,
     agent_persona: str | None,
+    skill_files: list[Path] | None = None,
 ) -> Path | None:
-    skills_dir = plugin_path / "skills"
-    if not skills_dir.exists() and not apply_to:
-        return None
+    if skill_files is None:
+        skills_dir = plugin_path / "skills"
+        files = sorted(skills_dir.glob(SKILL_GLOB), key=lambda p: p.parent.name) if skills_dir.exists() else []
+    else:
+        files = sorted(skill_files, key=lambda p: p.parent.name)
 
-    skill_files = (
-        sorted(skills_dir.glob(SKILL_GLOB), key=lambda p: p.parent.name)
-        if skills_dir.exists()
-        else []
-    )
-    if not skill_files and not apply_to:
+    if not files and not apply_to:
         return None
 
     plugin_name = plugin_path.name
@@ -142,11 +158,9 @@ def build_instruction_file(
     if agent_persona:
         content_parts.append(f"\n{agent_persona.strip()}\n")
 
-    content_parts.append(
-        f"\nThese guidelines provide practices for {plugin_name.replace('-', ' ')}.\n"
-    )
+    content_parts.append(f"\nThese guidelines provide practices for {plugin_name.replace('-', ' ')}.\n")
 
-    for skill_file in skill_files:
+    for skill_file in files:
         skill_content = read_text(skill_file)
         split = split_frontmatter(skill_content)
         body = split.body
@@ -170,6 +184,7 @@ def create_instruction_outputs(
     instructions_dir: Path,
     entries: list,
     agent_persona: str | None,
+    skill_files: list[Path] | None = None,
 ) -> list[str]:
     outputs: list[str] = []
     for entry in entries:
@@ -179,6 +194,7 @@ def create_instruction_outputs(
             entry.name,
             entry.apply_to,
             agent_persona,
+            skill_files,
         )
         if created:
             outputs.append(str(created))
@@ -186,11 +202,14 @@ def create_instruction_outputs(
 
 
 def create_skill_output(
-    plugin_path: Path, skills_dir: Path, plugin_name: str, agent_persona: str | None
+    plugin_path: Path,
+    skills_dir: Path,
+    plugin_name: str,
+    agent_persona: str | None,
+    skill_files: list[Path] | None = None,
 ) -> list[str]:
-    created = build_instruction_file(
-        plugin_path, skills_dir, plugin_name, None, agent_persona
-    )
+    output_dir = skills_dir / plugin_name
+    created = build_instruction_file(plugin_path, output_dir, "SKILL", None, agent_persona, skill_files)
     return [str(created)] if created else []
 
 
@@ -199,14 +218,18 @@ def build_prompts_for_plugin(
     prompts_dir: Path,
     plugin_name: str,
     agent_persona: str | None,
+    command_files: list[Path] | None = None,
 ) -> tuple[list[str], list[dict[str, str]]]:
     prompts: list[str] = []
     previews: list[dict[str, str]] = []
-    for command_file in (plugin_path / "commands").glob("*.md"):
+    files = (
+        sorted(command_files, key=lambda p: p.name)
+        if command_files is not None
+        else sorted((plugin_path / "commands").glob("*.md"), key=lambda p: p.name)
+    )
+    for command_file in files:
         destination = prompts_dir / f"{plugin_name}__{command_file.stem}.prompt.md"
-        build_enhanced_prompt_file(
-            command_file, destination, plugin_name, agent_persona, None
-        )
+        build_enhanced_prompt_file(command_file, destination, plugin_name, agent_persona, None)
         prompts.append(str(destination))
         previews.append(
             {
@@ -260,7 +283,8 @@ This repository contains a library of custom agents, prompts, and skills convert
 
 **Guidance:**
 - Context is auto-loaded for specific file types (e.g. Python).
-- For general questions (Git, Architecture), reference the file in `.github/skills/` (e.g. `@workspace #file skills/git.md`).
+- For general questions (Git, Architecture), reference the file in
+`.github/skills/` (e.g. `@workspace #file skills/git.md`).
 """
 
     if not instructions_path.exists():

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -17,9 +15,7 @@ def load_mappings(mapping_path: Path | None = None) -> dict:
         return {}
 
 
-def get_mapping_entries(
-    plugin_name: str, mapping_path: Path | None = None
-) -> list[MappingEntry]:
+def get_mapping_entries(plugin_name: str, mapping_path: Path | None = None) -> list[MappingEntry]:
     mappings = load_mappings(mapping_path)
     prefix = f"{plugin_name}-"
     entries: list[MappingEntry] = []

@@ -20,22 +20,24 @@ packages = ["src/copilot_converter"]
 include = ["src/copilot_converter"]
 
 [dependency-groups]
-dev = ["ruff", "pytest", "mypy", "prek", "pyclean"]
-
-[tool.black]
-target-version = ['py313']
-line-length = 120
+dev = [
+    "ruff",
+    "pytest",
+    "mypy",
+    "prek",
+    "pyclean",
+]
 
 [tool.ruff]
 lint.extend-select = ['Q', 'C90', "F", "E", "W", "I001", "C", "B"]
 lint.ignore = [
-    "E501", # line too long, handled by black
+    #"E501", # line too long, handled by black
     # "B008", # do not perform function calls in argument defaults (fastapi)
     # "C901", # too complex (long functions)
 ]
-
 lint.mccabe = { max-complexity = 14 }
 lint.pydocstyle = { convention = 'google' }
+line-length = 120
 target-version = "py313"
 
 [tool.mypy]

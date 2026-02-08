@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 from .file_ops import read_text
@@ -13,9 +11,7 @@ def extract_agent_name(agent_path: Path) -> str:
     return meta.get("name", agent_path.stem)
 
 
-def extract_agent_persona(
-    plugin_path: Path, agent_hint: str | None = None
-) -> tuple[str | None, str | None]:
+def extract_agent_persona(plugin_path: Path, agent_hint: str | None = None) -> tuple[str | None, str | None]:
     agents_dir = plugin_path / "agents"
     if not agents_dir.exists():
         return None, None
