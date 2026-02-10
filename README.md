@@ -6,7 +6,7 @@ Convert source plugin repositories into Copilot plugin bundles, then optionally 
 
 - `src/copilot_converter/`: converter implementation
 - `plugins/`: generated plugin output (upstream-synced content)
-- `scripts/install-vscode-fallback.ps1`: VS Code fallback installer
+- `scripts/install-vscode-fallback-copilot-converter.ps1`: VS Code fallback installer
 - `scripts/precommit_pwsh_syntax_check.py`: local PowerShell syntax hook helper
 - `.github/plugin/marketplace.json`: generated marketplace index
 - `plugin-selection.json`: plugin enable/disable state for conversion
@@ -75,13 +75,13 @@ copilot plugin marketplace add /absolute/path/to/this/repo
 Run:
 
 ```powershell
-pwsh -File ./scripts/install-vscode-fallback.ps1
+pwsh -File ./scripts/install-vscode-fallback-copilot-converter.ps1
 ```
 
 No-clone one-liner:
 
 ```powershell
-irm https://raw.githubusercontent.com/sla-te/copilot-converter/main/scripts/install-vscode-fallback.ps1 | iex
+irm https://raw.githubusercontent.com/sla-te/copilot-converter/main/scripts/install-vscode-fallback-copilot-converter.ps1 | iex
 ```
 
 What it installs:
@@ -136,21 +136,21 @@ Operation modes:
 Examples:
 
 ```powershell
-pwsh -File ./scripts/install-vscode-fallback.ps1 `
+pwsh -File ./scripts/install-vscode-fallback-copilot-converter.ps1 `
   -Target Workspace `
   -WorkspaceRoot C:\src\my-repo `
   -Plugins conductor,backend-development
 ```
 
 ```powershell
-pwsh -File ./scripts/install-vscode-fallback.ps1 `
+pwsh -File ./scripts/install-vscode-fallback-copilot-converter.ps1 `
   -SourceMode Remote `
   -Target UserVSCode `
   -UpdateExisting
 ```
 
 ```powershell
-pwsh -File ./scripts/install-vscode-fallback.ps1 `
+pwsh -File ./scripts/install-vscode-fallback-copilot-converter.ps1 `
   -SourceMode Remote `
   -Target UserVSCode `
   -SourceCacheRoot C:\temp\copilot-cache
@@ -175,7 +175,7 @@ Targeted checks:
 ```bash
 uv run ruff check src/copilot_converter
 uv run mypy src/copilot_converter
-uv run prek run powershell-syntax-check --files scripts/install-vscode-fallback.ps1
+uv run prek run powershell-syntax-check --files scripts/install-vscode-fallback-copilot-converter.ps1
 ```
 
 Note:

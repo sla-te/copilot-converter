@@ -12,16 +12,21 @@ It supports interactive selection of plugins, categories, and items, and lets yo
 target workspace, user-level, or custom directories.
 
 .EXAMPLE
-pwsh -File ./scripts/install-vscode-fallback.ps1
+pwsh -File ./scripts/install-vscode-fallback-copilot-converter.ps1
 
 .EXAMPLE
 # Run directly from GitHub (no clone, no git required)
-irm https://raw.githubusercontent.com/sla-te/copilot-converter/main/scripts/install-vscode-fallback.ps1 | iex
+irm https://raw.githubusercontent.com/sla-te/copilot-converter/main/scripts/install-vscode-fallback-copilot-converter.ps1 | iex
 
 .EXAMPLE
-pwsh -File ./scripts/install-vscode-fallback.ps1 -Target Workspace -WorkspaceRoot C:\src\my-repo -Plugins backend-development,conductor -DryRun
+pwsh -File ./scripts/install-vscode-fallback-copilot-converter.ps1 -Target Workspace -WorkspaceRoot C:\src\my-repo -Plugins backend-development,conductor -DryRun
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    'PSAvoidUsingWriteHost',
+    '',
+    Justification = 'Interactive installer UI uses direct host rendering and colors.'
+)]
 [CmdletBinding()]
 param(
     [string]$RepoRoot = "",
@@ -42,31 +47,33 @@ param(
     [switch]$Force,
     [switch]$DryRun,
     [switch]$UpdateExisting,
-    [string]$StateFilePath,
-    [bool]$PrefixWithPlugin = $true
+    [string]$StateFilePath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$global:CopilotConverterCleanupPath = $null
-$global:CopilotConverterKeepDownloadedSource = $false
-$global:CopilotConverterCleanupRegistered = $false
-$global:CopilotConverterCleanupSubscriptionIds = @()
+$script:CopilotConverterCleanupPath = $null
+$script:CopilotConverterKeepDownloadedSource = $false
+$script:CopilotConverterCleanupRegistered = $false
+$script:CopilotConverterCleanupSubscriptionIds = @()
 
 function Invoke-TempCleanup {
-    if ($global:CopilotConverterKeepDownloadedSource) {
+    if ($script:CopilotConverterKeepDownloadedSource) {
         return
     }
-    $path = $global:CopilotConverterCleanupPath
+    $path = $script:CopilotConverterCleanupPath
     if ($path -and (Test-Path -LiteralPath $path)) {
         Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
-        $global:CopilotConverterCleanupPath = $null
+        $script:CopilotConverterCleanupPath = $null
     }
 }
 
-function Remove-StaleTempFolders {
-    if ($global:CopilotConverterKeepDownloadedSource) {
+function Clear-StaleTempFolderCache {
+    [CmdletBinding(SupportsShouldProcess)]
+    param()
+
+    if ($script:CopilotConverterKeepDownloadedSource) {
         return
     }
 
@@ -81,7 +88,7 @@ function Remove-StaleTempFolders {
     }
 
     foreach ($folder in $folders) {
-        if ($folder.FullName -eq $global:CopilotConverterCleanupPath) {
+        if ($folder.FullName -eq $script:CopilotConverterCleanupPath) {
             continue
         }
 
@@ -90,39 +97,43 @@ function Remove-StaleTempFolders {
             continue
         }
 
-        Remove-Item -LiteralPath $folder.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        if ($PSCmdlet.ShouldProcess($folder.FullName, "Remove stale temporary source folder")) {
+            Remove-Item -LiteralPath $folder.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
-function Register-CleanupHandlers {
-    if ($global:CopilotConverterCleanupRegistered) {
+function Register-CleanupHandler {
+    if ($script:CopilotConverterCleanupRegistered) {
         return
     }
     try {
         $exitSub = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { Invoke-TempCleanup }
         if ($exitSub) {
-            $global:CopilotConverterCleanupSubscriptionIds += $exitSub.SubscriptionId
+            $script:CopilotConverterCleanupSubscriptionIds += $exitSub.SubscriptionId
         }
     }
     catch {
+        Write-Verbose "Register-EngineEvent not available in this host; cleanup falls back to finally block."
     }
     try {
         $ctrlSub = Register-ObjectEvent -InputObject ([Console]) -EventName CancelKeyPress -Action { Invoke-TempCleanup }
         if ($ctrlSub) {
-            $global:CopilotConverterCleanupSubscriptionIds += $ctrlSub.SubscriptionId
+            $script:CopilotConverterCleanupSubscriptionIds += $ctrlSub.SubscriptionId
         }
     }
     catch {
+        Write-Verbose "CancelKeyPress event not available in this host; continuing without Ctrl+C cleanup handler."
     }
-    $global:CopilotConverterCleanupRegistered = $true
+    $script:CopilotConverterCleanupRegistered = $true
 }
 
-function Unregister-CleanupHandlers {
-    foreach ($id in $global:CopilotConverterCleanupSubscriptionIds) {
+function Unregister-CleanupHandler {
+    foreach ($id in $script:CopilotConverterCleanupSubscriptionIds) {
         Unregister-Event -SubscriptionId $id -ErrorAction SilentlyContinue
     }
-    $global:CopilotConverterCleanupSubscriptionIds = @()
-    $global:CopilotConverterCleanupRegistered = $false
+    $script:CopilotConverterCleanupSubscriptionIds = @()
+    $script:CopilotConverterCleanupRegistered = $false
 }
 
 function Write-Info {
@@ -135,8 +146,42 @@ function Write-WarnLine {
     Write-Host "[WARN] $Message" -ForegroundColor Yellow
 }
 
-function Ensure-Directory {
+function Write-Step {
+    param([string]$Message)
+    Write-Host "[STEP] $Message" -ForegroundColor Blue
+}
+
+function Write-SuccessLine {
+    param([string]$Message)
+    Write-Host "[OK]   $Message" -ForegroundColor Green
+}
+
+function Write-Section {
+    param([string]$Title)
+    Write-Host ""
+    Write-Host ("==== {0} ====" -f $Title) -ForegroundColor Magenta
+}
+
+function Write-KeyValueLine {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [ValidateSet("Gray", "White", "Cyan", "Green", "Yellow", "Red")]
+        [string]$ValueColor = "White"
+    )
+
+    Write-Host ("  {0}" -f $Label.PadRight(30, " ")) -NoNewline -ForegroundColor DarkGray
+    Write-Host $Value -ForegroundColor $ValueColor
+}
+
+function New-DirectoryIfMissing {
+    [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not $PSCmdlet.ShouldProcess($Path, "Create directory when missing")) {
+        return
+    }
+
     if (-not (Test-Path -LiteralPath $Path)) {
         New-Item -ItemType Directory -Path $Path -Force | Out-Null
     }
@@ -195,6 +240,7 @@ function Get-HeaderValue {
         $value = $Headers[$Name]
     }
     catch {
+        Write-Verbose "Header '$Name' lookup failed; trying normalized casing."
     }
 
     if (-not $value) {
@@ -202,6 +248,7 @@ function Get-HeaderValue {
             $value = $Headers[$Name.ToLowerInvariant()]
         }
         catch {
+            Write-Verbose "Lowercase header '$Name' lookup failed."
         }
     }
 
@@ -260,12 +307,17 @@ function Write-InstallState {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$PromptsPath,
         [Parameter(Mandatory = $true)][string]$SkillsPath,
-        [Parameter(Mandatory = $true)][array]$SelectedPlugins,
+        [array]$SelectedPlugins = @(),
         [array]$SelectedAgents = @(),
         [array]$SelectedCommands = @(),
-        [array]$SelectedSkills = @()
+        [array]$SelectedSkills = @(),
+        [array]$InstalledPromptTargets = @(),
+        [array]$InstalledSkillTargets = @()
     )
 
+    if (-not $SelectedPlugins) {
+        $SelectedPlugins = @()
+    }
     if (-not $SelectedAgents) {
         $SelectedAgents = @()
     }
@@ -275,10 +327,37 @@ function Write-InstallState {
     if (-not $SelectedSkills) {
         $SelectedSkills = @()
     }
+    if (-not $InstalledPromptTargets) {
+        $InstalledPromptTargets = @()
+    }
+    if (-not $InstalledSkillTargets) {
+        $InstalledSkillTargets = @()
+    }
+
+    $pluginNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($plugin in $SelectedPlugins) {
+        if ($plugin -and -not [string]::IsNullOrWhiteSpace([string]$plugin.Name)) {
+            [void]$pluginNames.Add([string]$plugin.Name)
+        }
+    }
+    foreach ($item in $SelectedAgents) {
+        if ($item -and -not [string]::IsNullOrWhiteSpace([string]$item.Plugin)) {
+            [void]$pluginNames.Add([string]$item.Plugin)
+        }
+    }
+    foreach ($item in $SelectedCommands) {
+        if ($item -and -not [string]::IsNullOrWhiteSpace([string]$item.Plugin)) {
+            [void]$pluginNames.Add([string]$item.Plugin)
+        }
+    }
+    foreach ($item in $SelectedSkills) {
+        if ($item -and -not [string]::IsNullOrWhiteSpace([string]$item.Plugin)) {
+            [void]$pluginNames.Add([string]$item.Plugin)
+        }
+    }
 
     $pluginEntries = @()
-    foreach ($plugin in ($SelectedPlugins | Sort-Object Name -Unique)) {
-        $pluginName = $plugin.Name
+    foreach ($pluginName in ($pluginNames | Sort-Object)) {
         $agents = @($SelectedAgents | Where-Object { $_.Plugin -eq $pluginName } | ForEach-Object { $_.Stem } | Sort-Object -Unique)
         $commands = @($SelectedCommands | Where-Object { $_.Plugin -eq $pluginName } | ForEach-Object { $_.Stem } | Sort-Object -Unique)
         $skills = @($SelectedSkills | Where-Object { $_.Plugin -eq $pluginName } | ForEach-Object { $_.Name } | Sort-Object -Unique)
@@ -292,14 +371,18 @@ function Write-InstallState {
     }
 
     $state = [PSCustomObject]@{
-        schemaVersion = 1
-        updatedAt     = (Get-Date).ToString("o")
-        promptsPath   = $PromptsPath
-        skillsPath    = $SkillsPath
-        plugins       = $pluginEntries
+        schemaVersion      = 2
+        updatedAt          = (Get-Date).ToString("o")
+        promptsPath        = $PromptsPath
+        skillsPath         = $SkillsPath
+        plugins            = $pluginEntries
+        installedArtifacts = [PSCustomObject]@{
+            promptTargets = @($InstalledPromptTargets | Sort-Object -Unique)
+            skillTargets  = @($InstalledSkillTargets | Sort-Object -Unique)
+        }
     }
 
-    Ensure-Directory -Path (Split-Path -Parent $Path)
+    New-DirectoryIfMissing -Path (Split-Path -Parent $Path)
     $json = $state | ConvertTo-Json -Depth 8
     Set-Content -LiteralPath $Path -Value $json -Encoding UTF8
 }
@@ -325,13 +408,18 @@ function Get-VSCodeUserRoot {
     return Join-Path $homePath ".config/Code/User"
 }
 
-function Parse-SelectionInput {
+function ConvertFrom-SelectionInput {
     param(
-        [Parameter(Mandatory = $true)][string]$InputValue,
+        [AllowNull()][AllowEmptyString()][string]$InputValue = "",
         [Parameter(Mandatory = $true)][int]$MaxIndex
     )
 
-    $raw = $InputValue.Trim().ToLowerInvariant()
+    $raw = [string]$InputValue
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        Write-Output -NoEnumerate @()
+        return
+    }
+    $raw = $raw.Trim().ToLowerInvariant()
     if ($raw -eq "all" -or $raw -eq "*") {
         return @(0..($MaxIndex - 1))
     }
@@ -366,7 +454,8 @@ function Parse-SelectionInput {
         }
         throw "Unsupported token '$part'. Use numbers, ranges (for example 2-5), or 'all'."
     }
-    return @($indexes | Sort-Object)
+    Write-Output -NoEnumerate @($indexes | Sort-Object)
+    return
 }
 
 function Test-InteractiveConsole {
@@ -376,6 +465,25 @@ function Test-InteractiveConsole {
     catch {
         return $false
     }
+}
+
+function Test-GoBackKeyPress {
+    param([Parameter(Mandatory = $true)]$KeyInfo)
+
+    if ($KeyInfo.Key -eq [ConsoleKey]::Backspace -or $KeyInfo.Key -eq [ConsoleKey]::Delete) {
+        return $true
+    }
+    if (($KeyInfo.Key -eq [ConsoleKey]::H) -and (($KeyInfo.Modifiers -band [ConsoleModifiers]::Control) -ne 0)) {
+        return $true
+    }
+    if ([int]$KeyInfo.KeyChar -eq 8) {
+        return $true
+    }
+    if ($KeyInfo.KeyChar -eq "b" -or $KeyInfo.KeyChar -eq "B" -or $KeyInfo.KeyChar -eq "q" -or $KeyInfo.KeyChar -eq "Q") {
+        return $true
+    }
+
+    return $false
 }
 
 function Select-IndicesFromList {
@@ -388,7 +496,8 @@ function Select-IndicesFromList {
     )
 
     if ($Items.Count -eq 0) {
-        return @()
+        Write-Output -NoEnumerate @()
+        return
     }
 
     if (-not (Test-InteractiveConsole)) {
@@ -399,12 +508,14 @@ function Select-IndicesFromList {
 
         while ($true) {
             $suffix = if ($AllowEmpty) { " (Enter to skip)" } else { "" }
-            $answer = Read-Host "$Label (comma/range/all)$suffix"
-            if ($AllowEmpty -and [string]::IsNullOrWhiteSpace($answer)) {
-                return @()
+            $answerRaw = Read-Host "$Label (comma/range/all)$suffix"
+            $answerText = if ($null -eq $answerRaw) { "" } else { [string]$answerRaw }
+            if ($AllowEmpty -and [string]::IsNullOrWhiteSpace($answerText)) {
+                Write-Output -NoEnumerate @()
+                return
             }
             try {
-                return Parse-SelectionInput -InputValue $answer -MaxIndex $Items.Count
+                return ConvertFrom-SelectionInput -InputValue $answerText -MaxIndex $Items.Count
             }
             catch {
                 Write-WarnLine $_.Exception.Message
@@ -450,12 +561,14 @@ function Select-IndicesFromList {
 
         while ($true) {
             $suffix = if ($AllowEmpty) { " (Enter to skip)" } else { "" }
-            $answer = Read-Host "$Label (comma/range/all)$suffix"
-            if ($AllowEmpty -and [string]::IsNullOrWhiteSpace($answer)) {
-                return @()
+            $answerRaw = Read-Host "$Label (comma/range/all)$suffix"
+            $answerText = if ($null -eq $answerRaw) { "" } else { [string]$answerRaw }
+            if ($AllowEmpty -and [string]::IsNullOrWhiteSpace($answerText)) {
+                Write-Output -NoEnumerate @()
+                return
             }
             try {
-                return Parse-SelectionInput -InputValue $answer -MaxIndex $Items.Count
+                return ConvertFrom-SelectionInput -InputValue $answerText -MaxIndex $Items.Count
             }
             catch {
                 Write-WarnLine $_.Exception.Message
@@ -590,7 +703,116 @@ function Select-IndicesFromList {
         }
     }
     Write-Host ""
-    return $indexes
+    Write-Output -NoEnumerate $indexes
+    return
+}
+
+function Select-IndexFromList {
+    param(
+        [Parameter(Mandatory = $true)][array]$Items,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [int]$PreselectedIndex = 0
+    )
+
+    if ($Items.Count -eq 0) {
+        throw "No items available for selection."
+    }
+
+    if ($PreselectedIndex -lt 0 -or $PreselectedIndex -ge $Items.Count) {
+        $PreselectedIndex = 0
+    }
+
+    if (-not (Test-InteractiveConsole)) {
+        for ($i = 0; $i -lt $Items.Count; $i++) {
+            $n = $i + 1
+            Write-Host ("[{0}] {1}" -f $n.ToString().PadLeft(2, " "), $Items[$i])
+        }
+        while ($true) {
+            $answerRaw = Read-Host "$Label (single number)"
+            $answerText = if ($null -eq $answerRaw) { "" } else { [string]$answerRaw }
+            if ($answerText -match "^\d+$") {
+                $idx = [int]$answerText
+                if ($idx -ge 1 -and $idx -le $Items.Count) {
+                    return ($idx - 1)
+                }
+            }
+            Write-WarnLine "Use a single number from 1 to $($Items.Count)."
+        }
+    }
+
+    $cursor = $PreselectedIndex
+    $offset = 0
+    $headerLines = 5
+    $minWidth = 40
+
+    while ($true) {
+        $windowWidth = 120
+        $windowHeight = 30
+        try {
+            $windowWidth = [Console]::WindowWidth
+            $windowHeight = [Console]::WindowHeight
+        }
+        catch {
+            $windowWidth = 120
+            $windowHeight = 30
+        }
+
+        $width = [Math]::Max($windowWidth - 1, $minWidth)
+        $pageSize = $windowHeight - $headerLines - 1
+        if ($pageSize -lt 1) { $pageSize = 1 }
+
+        if ($cursor -lt $offset) { $offset = $cursor }
+        elseif ($cursor -ge ($offset + $pageSize)) { $offset = $cursor - $pageSize + 1 }
+        if ($offset -lt 0) { $offset = 0 }
+        if ($offset -gt [Math]::Max($Items.Count - $pageSize, 0)) { $offset = [Math]::Max($Items.Count - $pageSize, 0) }
+
+        Clear-Host
+        Write-Host $Label -ForegroundColor Cyan
+        Write-Host "Use Up/Down to move, Enter to select" -ForegroundColor DarkGray
+        Write-Host ""
+
+        $end = [Math]::Min($offset + $pageSize - 1, $Items.Count - 1)
+        for ($i = $offset; $i -le $end; $i++) {
+            $pointer = if ($i -eq $cursor) { ">" } else { " " }
+            $lineText = "$pointer $($Items[$i])"
+            if ($lineText.Length -gt $width) {
+                $lineText = $lineText.Substring(0, $width - 3) + "..."
+            }
+            [Console]::WriteLine($lineText)
+        }
+
+        $key = [Console]::ReadKey($true)
+        switch ($key.Key) {
+            "UpArrow" { if ($cursor -gt 0) { $cursor-- } }
+            "DownArrow" { if ($cursor -lt ($Items.Count - 1)) { $cursor++ } }
+            "PageUp" { $cursor = [Math]::Max($cursor - $pageSize, 0) }
+            "PageDown" { $cursor = [Math]::Min($cursor + $pageSize, $Items.Count - 1) }
+            "Home" { $cursor = 0 }
+            "End" { $cursor = $Items.Count - 1 }
+            "Enter" { return $cursor }
+        }
+    }
+}
+
+function Select-RunConfiguration {
+    param()
+
+    if (-not (Test-InteractiveConsole)) {
+        return $null
+    }
+
+    $runtimeModes = @(
+        "Install/add (overwrite existing)",
+        "Update existing",
+        "Dry run"
+    )
+    $runtimeModeIndex = Select-IndexFromList -Items $runtimeModes -Label "Select runtime mode"
+
+    return [PSCustomObject]@{
+        UpdateExisting = ($runtimeModeIndex -eq 1)
+        DryRun         = ($runtimeModeIndex -eq 2)
+        Force          = ($runtimeModeIndex -eq 0)
+    }
 }
 
 function Select-FromList {
@@ -605,7 +827,8 @@ function Select-FromList {
     foreach ($idx in $indexes) {
         $values += $Items[$idx]
     }
-    return $values
+    Write-Output -NoEnumerate $values
+    return
 }
 
 function Select-ObjectsByPlugin {
@@ -650,7 +873,7 @@ function Select-CandidatesByPlugin {
     return Select-ObjectsByPlugin -Candidates $Candidates -SelectedPluginObjects $SelectedPluginObjects -KindLabel $KindLabel -ExplicitPluginList:$ExplicitPluginList
 }
 
-function Build-CandidatesFromPlugins {
+function Get-CandidateSet {
     param(
         [Parameter(Mandatory = $true)][array]$Plugins,
         [Parameter(Mandatory = $true)][bool]$IncludeAgents,
@@ -829,7 +1052,7 @@ function Resolve-SelectionsFromState {
     }
 }
 
-function Select-InlineInstallItems {
+function Select-InlineInstallItemSet {
     param(
         [Parameter(Mandatory = $true)][array]$Catalog,
         [Parameter(Mandatory = $true)][bool]$IncludeAgents,
@@ -1027,7 +1250,7 @@ function Select-InlineInstallItems {
         Clear-Host
         Write-Host "Select plugins and items to install" -ForegroundColor Cyan
         Write-Host "Expand plugins inline and select agents/commands. Skills install automatically for selected plugins." -ForegroundColor DarkGray
-        Write-Host "Keys: Up/Down PgUp/PgDn Home/End | Right/Left expand/collapse | Space toggle item | T toggle plugin | A toggle all | I invert | Backspace go back | Enter confirm | Esc clear all" -ForegroundColor DarkGray
+        Write-Host "Keys: Up/Down PgUp/PgDn Home/End | Right/Left expand/collapse | Space toggle item | T toggle plugin | A toggle all | I invert | Backspace/Delete/Ctrl+H/B/Q go back | Enter confirm | Esc clear all" -ForegroundColor DarkGray
         Write-Host ("Selected {0}/{1}" -f $selectedCount, $totalCount) -ForegroundColor DarkGray
         Write-Host ""
 
@@ -1081,50 +1304,51 @@ function Select-InlineInstallItems {
         $done = $false
         $key = [Console]::ReadKey($true)
         $rowAtCursor = $rows[$cursor]
-
-        switch ($key.Key) {
-            "UpArrow" { if ($cursor -gt 0) { $cursor-- } }
-            "DownArrow" { if ($cursor -lt ($rows.Count - 1)) { $cursor++ } }
-            "PageUp" { $cursor = [Math]::Max($cursor - $pageSize, 0) }
-            "PageDown" { $cursor = [Math]::Min($cursor + $pageSize, $rows.Count - 1) }
-            "Home" { $cursor = 0 }
-            "End" { $cursor = $rows.Count - 1 }
-            "RightArrow" {
-                if ($rowAtCursor.RowType -eq "plugin") {
-                    $rowAtCursor.State.Expanded = $true
+        if (Test-GoBackKeyPress -KeyInfo $key) {
+            $goBack = $true
+            $done = $true
+        }
+        else {
+            switch ($key.Key) {
+                "UpArrow" { if ($cursor -gt 0) { $cursor-- } }
+                "DownArrow" { if ($cursor -lt ($rows.Count - 1)) { $cursor++ } }
+                "PageUp" { $cursor = [Math]::Max($cursor - $pageSize, 0) }
+                "PageDown" { $cursor = [Math]::Min($cursor + $pageSize, $rows.Count - 1) }
+                "Home" { $cursor = 0 }
+                "End" { $cursor = $rows.Count - 1 }
+                "RightArrow" {
+                    if ($rowAtCursor.RowType -eq "plugin") {
+                        $rowAtCursor.State.Expanded = $true
+                    }
                 }
-            }
-            "LeftArrow" {
-                if ($rowAtCursor.RowType -eq "plugin") {
-                    $rowAtCursor.State.Expanded = $false
+                "LeftArrow" {
+                    if ($rowAtCursor.RowType -eq "plugin") {
+                        $rowAtCursor.State.Expanded = $false
+                    }
                 }
-            }
-            "Spacebar" {
-                if ($rowAtCursor.RowType -eq "plugin") {
-                    $rowAtCursor.State.Expanded = -not $rowAtCursor.State.Expanded
-                }
-                else {
-                    $k = $rowAtCursor.Child.Key
-                    if ($selectedKeys.Contains($k)) {
-                        [void]$selectedKeys.Remove($k)
+                "Spacebar" {
+                    if ($rowAtCursor.RowType -eq "plugin") {
+                        $rowAtCursor.State.Expanded = -not $rowAtCursor.State.Expanded
                     }
                     else {
-                        [void]$selectedKeys.Add($k)
+                        $k = $rowAtCursor.Child.Key
+                        if ($selectedKeys.Contains($k)) {
+                            [void]$selectedKeys.Remove($k)
+                        }
+                        else {
+                            [void]$selectedKeys.Add($k)
+                        }
                     }
                 }
-            }
-            "Enter" { $done = $true }
-            "Escape" {
-                $selectedKeys.Clear()
-                $done = $true
-            }
-            "Backspace" {
-                $goBack = $true
-                $done = $true
+                "Enter" { $done = $true }
+                "Escape" {
+                    $selectedKeys.Clear()
+                    $done = $true
+                }
             }
         }
 
-        if ($key.KeyChar -eq "t" -or $key.KeyChar -eq "T") {
+        if (-not $done -and ($key.KeyChar -eq "t" -or $key.KeyChar -eq "T")) {
             if ($rowAtCursor.RowType -eq "plugin") {
                 $state = $rowAtCursor.State
                 $allSelected = $true
@@ -1145,7 +1369,7 @@ function Select-InlineInstallItems {
             }
         }
 
-        if ($key.KeyChar -eq "a" -or $key.KeyChar -eq "A") {
+        if (-not $done -and ($key.KeyChar -eq "a" -or $key.KeyChar -eq "A")) {
             $allSelected = $true
             foreach ($state in $pluginStates) {
                 foreach ($child in $state.Children) {
@@ -1170,7 +1394,7 @@ function Select-InlineInstallItems {
             }
         }
 
-        if ($key.KeyChar -eq "i" -or $key.KeyChar -eq "I") {
+        if (-not $done -and ($key.KeyChar -eq "i" -or $key.KeyChar -eq "I")) {
             foreach ($state in $pluginStates) {
                 foreach ($child in $state.Children) {
                     if ($selectedKeys.Contains($child.Key)) {
@@ -1233,23 +1457,25 @@ function Select-InlineInstallItems {
 
 function Resolve-ArtifactName {
     param(
-        [Parameter(Mandatory = $true)][string]$Plugin,
         [Parameter(Mandatory = $true)][string]$Stem,
-        [Parameter(Mandatory = $true)][ValidateSet("agent", "prompt")] [string]$Kind,
-        [Parameter(Mandatory = $true)][bool]$UsePrefix
+        [Parameter(Mandatory = $true)][ValidateSet("agent", "prompt")] [string]$Kind
     )
 
-    $base = $Stem
+    if ([string]::IsNullOrWhiteSpace($Stem)) {
+        return $null
+    }
+
+    $base = [string]$Stem
     if ($base.EndsWith(".agent", [System.StringComparison]::OrdinalIgnoreCase)) {
         $base = $base.Substring(0, $base.Length - 6)
     }
     if ($base.EndsWith(".prompt", [System.StringComparison]::OrdinalIgnoreCase)) {
         $base = $base.Substring(0, $base.Length - 7)
     }
-
-    if ($UsePrefix -and -not $base.StartsWith("$Plugin`__", [System.StringComparison]::OrdinalIgnoreCase)) {
-        $base = "$Plugin`__$base"
+    if ([string]::IsNullOrWhiteSpace($base)) {
+        return $null
     }
+
     return "$base.$Kind.md"
 }
 
@@ -1267,13 +1493,13 @@ function Copy-FileWithLog {
     }
 
     if ($NoWrite) {
-        Write-Info "[DryRun] Copy file: '$SourcePath' -> '$DestinationPath'"
+        Write-Step "[DryRun] Copy file: '$SourcePath' -> '$DestinationPath'"
         return $true
     }
 
-    Ensure-Directory -Path (Split-Path -Parent $DestinationPath)
+    New-DirectoryIfMissing -Path (Split-Path -Parent $DestinationPath)
     Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force:$Overwrite
-    Write-Info "Copied file: '$SourcePath' -> '$DestinationPath'"
+    Write-SuccessLine "Copied file: '$SourcePath' -> '$DestinationPath'"
     return $true
 }
 
@@ -1291,16 +1517,174 @@ function Copy-DirectoryWithLog {
     }
 
     if ($NoWrite) {
-        Write-Info "[DryRun] Copy dir: '$SourcePath' -> '$DestinationPath'"
+        Write-Step "[DryRun] Copy dir: '$SourcePath' -> '$DestinationPath'"
         return $true
     }
 
     if (Test-Path -LiteralPath $DestinationPath) {
         Remove-Item -LiteralPath $DestinationPath -Recurse -Force
     }
-    Ensure-Directory -Path (Split-Path -Parent $DestinationPath)
+    New-DirectoryIfMissing -Path (Split-Path -Parent $DestinationPath)
     Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Recurse
-    Write-Info "Copied dir: '$SourcePath' -> '$DestinationPath'"
+    Write-SuccessLine "Copied dir: '$SourcePath' -> '$DestinationPath'"
+    return $true
+}
+
+function Normalize-InstallTargetPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    $normalized = [string]$Path
+    try {
+        $normalized = [System.IO.Path]::GetFullPath($normalized)
+    }
+    catch {
+    }
+
+    return $normalized.TrimEnd('\', '/')
+}
+
+function New-InstallTargetSet {
+    param([array]$Targets)
+
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($targetPath in @($Targets)) {
+        $normalized = Normalize-InstallTargetPath -Path ([string]$targetPath)
+        if (-not [string]::IsNullOrWhiteSpace($normalized)) {
+            [void]$set.Add($normalized)
+        }
+    }
+    return , $set
+}
+
+function Test-TargetPathWithinRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RootPath
+    )
+
+    $normalizedPath = Normalize-InstallTargetPath -Path $Path
+    $normalizedRoot = Normalize-InstallTargetPath -Path $RootPath
+    if ([string]::IsNullOrWhiteSpace($normalizedPath) -or [string]::IsNullOrWhiteSpace($normalizedRoot)) {
+        return $false
+    }
+
+    if ($normalizedPath.Equals($normalizedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    foreach ($prefix in @("$normalizedRoot\", "$normalizedRoot/")) {
+        if ($normalizedPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-InstalledTargetsFromState {
+    param(
+        $State,
+        [Parameter(Mandatory = $true)][ValidateSet("promptTargets", "skillTargets")] [string]$PropertyName,
+        [string]$PromptsPath = "",
+        [string]$SkillsPath = ""
+    )
+
+    $targets = @()
+    if (
+        $State -and
+        ($State.PSObject.Properties.Name -contains "installedArtifacts") -and
+        $State.installedArtifacts -and
+        ($State.installedArtifacts.PSObject.Properties.Name -contains $PropertyName)
+    ) {
+        foreach ($targetPath in @($State.installedArtifacts.$PropertyName)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$targetPath)) {
+                $targets += [string]$targetPath
+            }
+        }
+    }
+
+    if ($targets.Count -gt 0) {
+        return $targets
+    }
+
+    if (-not $State -or -not ($State.PSObject.Properties.Name -contains "plugins")) {
+        return @()
+    }
+
+    foreach ($pluginEntry in @($State.plugins)) {
+        if (-not $pluginEntry) {
+            continue
+        }
+
+        if ($PropertyName -eq "promptTargets") {
+            if (-not [string]::IsNullOrWhiteSpace($PromptsPath)) {
+                foreach ($agentStem in @($pluginEntry.agents)) {
+                    if ([string]::IsNullOrWhiteSpace([string]$agentStem)) {
+                        continue
+                    }
+                    $artifactName = Resolve-ArtifactName -Stem ([string]$agentStem) -Kind "agent"
+                    if ([string]::IsNullOrWhiteSpace($artifactName)) {
+                        continue
+                    }
+                    $targets += (Join-Path $PromptsPath $artifactName)
+                }
+                foreach ($commandStem in @($pluginEntry.commands)) {
+                    if ([string]::IsNullOrWhiteSpace([string]$commandStem)) {
+                        continue
+                    }
+                    $artifactName = Resolve-ArtifactName -Stem ([string]$commandStem) -Kind "prompt"
+                    if ([string]::IsNullOrWhiteSpace($artifactName)) {
+                        continue
+                    }
+                    $targets += (Join-Path $PromptsPath $artifactName)
+                }
+            }
+        }
+        elseif ($PropertyName -eq "skillTargets") {
+            if (-not [string]::IsNullOrWhiteSpace($SkillsPath)) {
+                foreach ($skillName in @($pluginEntry.skills)) {
+                    if ([string]::IsNullOrWhiteSpace([string]$skillName)) {
+                        continue
+                    }
+                    $targets += (Join-Path $SkillsPath ([string]$skillName))
+                }
+            }
+        }
+    }
+
+    return $targets
+}
+
+function Remove-TargetWithLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetPath,
+        [Parameter(Mandatory = $true)][switch]$NoWrite,
+        [Parameter(Mandatory = $true)][string]$KindLabel
+    )
+
+    if (-not (Test-Path -LiteralPath $TargetPath)) {
+        return $false
+    }
+
+    $item = Get-Item -LiteralPath $TargetPath -Force
+    $itemType = if ($item.PSIsContainer) { "directory" } else { "file" }
+
+    if ($NoWrite) {
+        Write-Step "[DryRun] Remove $itemType ($KindLabel): '$TargetPath'"
+        return $true
+    }
+
+    if ($item.PSIsContainer) {
+        Remove-Item -LiteralPath $TargetPath -Recurse -Force
+    }
+    else {
+        Remove-Item -LiteralPath $TargetPath -Force
+    }
+    Write-SuccessLine "Removed $itemType ($KindLabel): '$TargetPath'"
     return $true
 }
 
@@ -1320,12 +1704,10 @@ function Resolve-PluginsRootFromRepoRoot {
     return $null
 }
 
-$cleanupPath = $null
-
 try {
-    $global:CopilotConverterKeepDownloadedSource = $KeepDownloadedSource
-    Register-CleanupHandlers
-    Remove-StaleTempFolders
+    $script:CopilotConverterKeepDownloadedSource = $KeepDownloadedSource
+    Register-CleanupHandler
+    Clear-StaleTempFolderCache
 
     $pluginsRoot = $null
     $resolvedRepoRoot = $null
@@ -1354,11 +1736,11 @@ try {
 
     if (-not $pluginsRoot -and $SourceMode -in @("Auto", "Remote")) {
         $cacheRoot = Get-CopilotConverterCacheRoot -OverridePath $SourceCacheRoot
-        Ensure-Directory -Path $cacheRoot
+        New-DirectoryIfMissing -Path $cacheRoot
 
         $urlHash = Get-StringSha256 -InputText $RemoteArchiveUrl
         $cachePath = Join-Path $cacheRoot ("source-" + $urlHash)
-        Ensure-Directory -Path $cachePath
+        New-DirectoryIfMissing -Path $cachePath
 
         $zipPath = Join-Path $cachePath "source.zip"
         $extractPath = Join-Path $cachePath "extract"
@@ -1454,7 +1836,7 @@ try {
             if (Test-Path -LiteralPath $extractPath) {
                 Remove-Item -LiteralPath $extractPath -Recurse -Force
             }
-            Ensure-Directory -Path $extractPath
+            New-DirectoryIfMissing -Path $extractPath
             Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
         }
 
@@ -1513,17 +1895,32 @@ try {
         throw "No plugins with agents/commands/skills found under $pluginsRoot"
     }
 
-    Write-Info "Discovered $($catalog.Count) plugins under '$pluginsRoot'."
+    Write-Section "Source"
+    Write-KeyValueLine -Label "Repository" -Value $resolvedRepoRoot -ValueColor "Cyan"
+    Write-KeyValueLine -Label "Plugins discovered" -Value ([string]$catalog.Count) -ValueColor "Green"
 
-    if (-not $IncludeAgents -and -not $IncludeCommands -and -not $IncludeSkills) {
-        $IncludeAgents = $true
-        $IncludeCommands = $true
-        $IncludeSkills = $true
+    $interactiveRunConfigSelected = $false
+    if ($Target -eq "Interactive" -and (Test-InteractiveConsole)) {
+        Write-Info "Configure runtime options (plugin tree selection is always used in this mode)."
+        $runConfig = Select-RunConfiguration
+        $UpdateExisting = $runConfig.UpdateExisting
+        $DryRun = $runConfig.DryRun
+        $Force = $runConfig.Force
+        $interactiveRunConfigSelected = $true
     }
 
+    # This installer is always plugin-first: install selections can include
+    # agents and commands inline, and skills from selected plugins.
+    $IncludeAgents = $true
+    $IncludeCommands = $true
+    $IncludeSkills = $true
+
     $updateExistingProvided = $PSBoundParameters.ContainsKey("UpdateExisting")
+    if ($interactiveRunConfigSelected) {
+        $updateExistingProvided = $true
+    }
     $explicitPluginList = ($Plugins -and $Plugins.Count -gt 0)
-    $canSelectInlineItems = $IncludeAgents -or $IncludeCommands
+    $canSelectInlineItems = $true
 
     $selectedPlugins = @()
     $selectedAgents = @()
@@ -1557,7 +1954,8 @@ try {
 
         if ($Target -eq "Interactive") {
             $scopeAnswer = Read-Host "Target location: [W]orkspace, [U]serVSCode, [C]ustom (default: W)"
-            switch ($scopeAnswer.Trim().ToUpperInvariant()) {
+            $scopeAnswerText = if ($null -eq $scopeAnswer) { "" } else { [string]$scopeAnswer }
+            switch ($scopeAnswerText.Trim().ToUpperInvariant()) {
                 "U" { $Target = "UserVSCode" }
                 "C" { $Target = "Custom" }
                 default { $Target = "Workspace" }
@@ -1598,14 +1996,16 @@ try {
 
         $StateFilePath = Get-StateFilePath -PromptsPath $PromptsPath -SkillsPath $SkillsPath -OverridePath $StateFilePath
 
-        Write-Info "Prompts target: $PromptsPath"
-        Write-Info "Skills target:  $SkillsPath"
-        Write-Info "State file:     $StateFilePath"
+        Write-Section "Target"
+        Write-KeyValueLine -Label "Prompts target" -Value $PromptsPath -ValueColor "Cyan"
+        Write-KeyValueLine -Label "Skills target" -Value $SkillsPath -ValueColor "Cyan"
+        Write-KeyValueLine -Label "State file" -Value $StateFilePath -ValueColor "Gray"
 
         $modeChosenInteractively = $false
         if ($initialTargetMode -eq "Interactive" -and (Test-InteractiveConsole) -and (-not $updateExistingProvided)) {
             $modeAnswer = Read-Host "Operation mode: [I]nstall/add selections, [U]pdate existing (default: I)"
-            $UpdateExisting = $modeAnswer.Trim().ToUpperInvariant() -eq "U"
+            $modeAnswerText = if ($null -eq $modeAnswer) { "" } else { [string]$modeAnswer }
+            $UpdateExisting = $modeAnswerText.Trim().ToUpperInvariant() -eq "U"
             $modeChosenInteractively = $true
         }
 
@@ -1619,8 +2019,8 @@ try {
         $interactiveSelectorEnabled = (-not $explicitPluginList) -and (-not $UpdateExisting) -and $canSelectInlineItems -and (Test-InteractiveConsole)
 
         if (-not $DryRun) {
-            Ensure-Directory -Path $PromptsPath
-            Ensure-Directory -Path $SkillsPath
+            New-DirectoryIfMissing -Path $PromptsPath
+            New-DirectoryIfMissing -Path $SkillsPath
         }
 
         $existingState = $null
@@ -1669,7 +2069,7 @@ try {
             $usedInlineSelector = $true
         }
         elseif ($interactiveSelectorEnabled) {
-            $inlineSelection = Select-InlineInstallItems -Catalog $catalog -IncludeAgents:$IncludeAgents -IncludeCommands:$IncludeCommands -IncludeSkills:$IncludeSkills -InitialState $existingState
+            $inlineSelection = Select-InlineInstallItemSet -Catalog $catalog -IncludeAgents:$IncludeAgents -IncludeCommands:$IncludeCommands -IncludeSkills:$IncludeSkills -InitialState $existingState
             if ($inlineSelection.BackRequested) {
                 if ($initialTargetMode -eq "Interactive") {
                     $Target = "Interactive"
@@ -1702,19 +2102,25 @@ try {
                     }
                 }
             }
-            $chosenIndexes = Select-IndicesFromList -Items $pluginLabels -Label "Select plugin(s) to install" -PreselectedIndexes $preselectedPluginIndexes
+            $chosenIndexes = Select-IndicesFromList -Items $pluginLabels -Label "Select plugin(s) to install" -PreselectedIndexes $preselectedPluginIndexes -AllowEmpty
             $selectedPlugins = @($chosenIndexes | ForEach-Object { $catalog[$_] })
         }
 
         break
     }
 
-    if ($selectedPlugins.Count -eq 0) {
-        throw "No plugins selected."
+    $selectionIsEmpty = (
+        $selectedPlugins.Count -eq 0 -and
+        $selectedAgents.Count -eq 0 -and
+        $selectedCommands.Count -eq 0 -and
+        $selectedSkills.Count -eq 0
+    )
+    if ($selectionIsEmpty -and -not $UpdateExisting) {
+        Write-Info "No items selected; proceeding to remove deselected previously installed targets (if any)."
     }
 
     if (-not $usedInlineSelector) {
-        $candidates = Build-CandidatesFromPlugins -Plugins $selectedPlugins -IncludeAgents:$IncludeAgents -IncludeCommands:$IncludeCommands -IncludeSkills:$IncludeSkills
+        $candidates = Get-CandidateSet -Plugins $selectedPlugins -IncludeAgents:$IncludeAgents -IncludeCommands:$IncludeCommands -IncludeSkills:$IncludeSkills
         $agentCandidates = @($candidates.Agents)
         $commandCandidates = @($candidates.Commands)
         $skillCandidates = @($candidates.Skills)
@@ -1738,6 +2144,10 @@ try {
     $skillSkippedExistingCount = 0
     $fileSkippedMissingUpdateCount = 0
     $skillSkippedMissingUpdateCount = 0
+    $fileRemovedDeselectedCount = 0
+    $skillRemovedDeselectedCount = 0
+    $installedPromptTargets = @()
+    $installedSkillTargets = @()
     $overwriteExistingFromSelectionFlow = $usedInlineSelector -and -not $UpdateExisting
     $effectiveForce = $Force -or $UpdateExisting -or $overwriteExistingFromSelectionFlow
 
@@ -1745,8 +2155,86 @@ try {
         Write-Info "Overwrite enabled for interactive selection flow."
     }
 
+    $desiredPromptTargets = @()
     foreach ($item in $selectedAgents) {
-        $targetName = Resolve-ArtifactName -Plugin $item.Plugin -Stem $item.Stem -Kind "agent" -UsePrefix $PrefixWithPlugin
+        $artifactName = Resolve-ArtifactName -Stem $item.Stem -Kind "agent"
+        if ([string]::IsNullOrWhiteSpace($artifactName)) {
+            Write-WarnLine "Skipped agent with empty artifact name (plugin=$($item.Plugin), stem=$($item.Stem))."
+            continue
+        }
+        $desiredPromptTargets += (Join-Path $PromptsPath $artifactName)
+    }
+    foreach ($item in $selectedCommands) {
+        $artifactName = Resolve-ArtifactName -Stem $item.Stem -Kind "prompt"
+        if ([string]::IsNullOrWhiteSpace($artifactName)) {
+            Write-WarnLine "Skipped command with empty artifact name (plugin=$($item.Plugin), stem=$($item.Stem))."
+            continue
+        }
+        $desiredPromptTargets += (Join-Path $PromptsPath $artifactName)
+    }
+
+    $desiredSkillTargets = @()
+    foreach ($item in $selectedSkills) {
+        $desiredSkillTargets += (Join-Path $SkillsPath $item.Name)
+    }
+
+    if (-not $UpdateExisting) {
+        $previousPromptTargets = @(Get-InstalledTargetsFromState -State $existingState -PropertyName "promptTargets" -PromptsPath $PromptsPath -SkillsPath $SkillsPath)
+        $previousSkillTargets = @(Get-InstalledTargetsFromState -State $existingState -PropertyName "skillTargets" -PromptsPath $PromptsPath -SkillsPath $SkillsPath)
+
+        $desiredPromptSet = New-InstallTargetSet -Targets $desiredPromptTargets
+        $desiredSkillSet = New-InstallTargetSet -Targets $desiredSkillTargets
+        $stalePromptSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $staleSkillSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        $stalePromptTargets = @()
+        $staleSkillTargets = @()
+
+        foreach ($previousTargetPath in $previousPromptTargets) {
+            $normalized = Normalize-InstallTargetPath -Path $previousTargetPath
+            if ([string]::IsNullOrWhiteSpace($normalized) -or $desiredPromptSet.Contains($normalized)) {
+                continue
+            }
+            if (-not (Test-TargetPathWithinRoot -Path $previousTargetPath -RootPath $PromptsPath)) {
+                Write-WarnLine "Skipping uninstall outside prompts target: $previousTargetPath"
+                continue
+            }
+            if ($stalePromptSet.Add($normalized)) {
+                $stalePromptTargets += $previousTargetPath
+            }
+        }
+
+        foreach ($previousTargetPath in $previousSkillTargets) {
+            $normalized = Normalize-InstallTargetPath -Path $previousTargetPath
+            if ([string]::IsNullOrWhiteSpace($normalized) -or $desiredSkillSet.Contains($normalized)) {
+                continue
+            }
+            if (-not (Test-TargetPathWithinRoot -Path $previousTargetPath -RootPath $SkillsPath)) {
+                Write-WarnLine "Skipping uninstall outside skills target: $previousTargetPath"
+                continue
+            }
+            if ($staleSkillSet.Add($normalized)) {
+                $staleSkillTargets += $previousTargetPath
+            }
+        }
+
+        foreach ($staleTargetPath in $stalePromptTargets) {
+            if (Remove-TargetWithLog -TargetPath $staleTargetPath -NoWrite:$DryRun -KindLabel "deselected prompt target") {
+                $fileRemovedDeselectedCount++
+            }
+        }
+        foreach ($staleTargetPath in $staleSkillTargets) {
+            if (Remove-TargetWithLog -TargetPath $staleTargetPath -NoWrite:$DryRun -KindLabel "deselected skill target") {
+                $skillRemovedDeselectedCount++
+            }
+        }
+    }
+
+    foreach ($item in $selectedAgents) {
+        $targetName = Resolve-ArtifactName -Stem $item.Stem -Kind "agent"
+        if ([string]::IsNullOrWhiteSpace($targetName)) {
+            Write-WarnLine "Skipped agent install with empty artifact name (plugin=$($item.Plugin), stem=$($item.Stem))."
+            continue
+        }
         $dest = Join-Path $PromptsPath $targetName
         if ($UpdateExisting -and -not (Test-Path -LiteralPath $dest)) {
             Write-WarnLine "Skipped missing target (update mode): $dest"
@@ -1760,11 +2248,16 @@ try {
         }
         if (Copy-FileWithLog -SourcePath $item.Path -DestinationPath $dest -Overwrite:$effectiveForce -NoWrite:$DryRun) {
             $fileInstallCount++
+            $installedPromptTargets += $dest
         }
     }
 
     foreach ($item in $selectedCommands) {
-        $targetName = Resolve-ArtifactName -Plugin $item.Plugin -Stem $item.Stem -Kind "prompt" -UsePrefix $PrefixWithPlugin
+        $targetName = Resolve-ArtifactName -Stem $item.Stem -Kind "prompt"
+        if ([string]::IsNullOrWhiteSpace($targetName)) {
+            Write-WarnLine "Skipped command install with empty artifact name (plugin=$($item.Plugin), stem=$($item.Stem))."
+            continue
+        }
         $dest = Join-Path $PromptsPath $targetName
         if ($UpdateExisting -and -not (Test-Path -LiteralPath $dest)) {
             Write-WarnLine "Skipped missing target (update mode): $dest"
@@ -1778,6 +2271,7 @@ try {
         }
         if (Copy-FileWithLog -SourcePath $item.Path -DestinationPath $dest -Overwrite:$effectiveForce -NoWrite:$DryRun) {
             $fileInstallCount++
+            $installedPromptTargets += $dest
         }
     }
 
@@ -1795,32 +2289,38 @@ try {
         }
         if (Copy-DirectoryWithLog -SourcePath $item.Path -DestinationPath $dest -Overwrite:$effectiveForce -NoWrite:$DryRun) {
             $skillInstallCount++
+            $installedSkillTargets += $dest
         }
     }
 
     if (-not $DryRun) {
-        Write-InstallState -Path $StateFilePath -PromptsPath $PromptsPath -SkillsPath $SkillsPath -SelectedPlugins $selectedPlugins -SelectedAgents $selectedAgents -SelectedCommands $selectedCommands -SelectedSkills $selectedSkills
+        Write-InstallState -Path $StateFilePath -PromptsPath $PromptsPath -SkillsPath $SkillsPath -SelectedPlugins $selectedPlugins -SelectedAgents $selectedAgents -SelectedCommands $selectedCommands -SelectedSkills $selectedSkills -InstalledPromptTargets $installedPromptTargets -InstalledSkillTargets $installedSkillTargets
     }
 
-    Write-Host ""
-    Write-Host "Install summary" -ForegroundColor Green
-    Write-Host "  Plugins selected : $($selectedPlugins.Count)"
-    Write-Host "  Agents selected  : $($selectedAgents.Count)"
-    Write-Host "  Commands selected: $($selectedCommands.Count)"
-    Write-Host "  Skills selected  : $($selectedSkills.Count)"
-    Write-Host "  Prompt files written: $fileInstallCount"
-    Write-Host "  Skill directories written: $skillInstallCount"
+    Write-Section "Install Summary"
+    Write-KeyValueLine -Label "Plugins selected" -Value ([string]$selectedPlugins.Count) -ValueColor "White"
+    Write-KeyValueLine -Label "Agents selected" -Value ([string]$selectedAgents.Count) -ValueColor "White"
+    Write-KeyValueLine -Label "Commands selected" -Value ([string]$selectedCommands.Count) -ValueColor "White"
+    Write-KeyValueLine -Label "Skills selected" -Value ([string]$selectedSkills.Count) -ValueColor "White"
+    Write-KeyValueLine -Label "Prompt files written" -Value ([string]$fileInstallCount) -ValueColor "Green"
+    Write-KeyValueLine -Label "Skill directories written" -Value ([string]$skillInstallCount) -ValueColor "Green"
+    if ($fileRemovedDeselectedCount -gt 0) {
+        Write-KeyValueLine -Label "Prompt removed (deselected)" -Value ([string]$fileRemovedDeselectedCount) -ValueColor "Yellow"
+    }
+    if ($skillRemovedDeselectedCount -gt 0) {
+        Write-KeyValueLine -Label "Skill removed (deselected)" -Value ([string]$skillRemovedDeselectedCount) -ValueColor "Yellow"
+    }
     if ($fileSkippedExistingCount -gt 0) {
-        Write-Host "  Prompt files skipped (existing): $fileSkippedExistingCount"
+        Write-KeyValueLine -Label "Prompt skipped (existing)" -Value ([string]$fileSkippedExistingCount) -ValueColor "Yellow"
     }
     if ($skillSkippedExistingCount -gt 0) {
-        Write-Host "  Skill directories skipped (existing): $skillSkippedExistingCount"
+        Write-KeyValueLine -Label "Skill skipped (existing)" -Value ([string]$skillSkippedExistingCount) -ValueColor "Yellow"
     }
     if ($fileSkippedMissingUpdateCount -gt 0) {
-        Write-Host "  Prompt files skipped (missing in update mode): $fileSkippedMissingUpdateCount"
+        Write-KeyValueLine -Label "Prompt skipped (missing update)" -Value ([string]$fileSkippedMissingUpdateCount) -ValueColor "Yellow"
     }
     if ($skillSkippedMissingUpdateCount -gt 0) {
-        Write-Host "  Skill directories skipped (missing in update mode): $skillSkippedMissingUpdateCount"
+        Write-KeyValueLine -Label "Skill skipped (missing update)" -Value ([string]$skillSkippedMissingUpdateCount) -ValueColor "Yellow"
     }
     if ($DryRun) {
         Write-WarnLine "Dry run only. No files were written."
@@ -1828,5 +2328,5 @@ try {
 }
 finally {
     Invoke-TempCleanup
-    Unregister-CleanupHandlers
+    Unregister-CleanupHandler
 }

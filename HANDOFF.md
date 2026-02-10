@@ -27,7 +27,7 @@
   - missing `references/*`, `assets/*`, `scripts/*` links in `SKILL.md` are created in output
   - missing sibling `../<skill>/SKILL.md` targets are generated as placeholder skills
 - VS Code fallback installer added for users not using Copilot plugin marketplaces:
-  - `scripts/install-vscode-fallback.ps1`
+  - `scripts/install-vscode-fallback-copilot-converter.ps1`
   - installs selected plugin `agents` and `commands` into prompt files
   - installs selected plugin `skills` directories into target skills folder
   - supports interactive selection and target scopes (`Workspace`, `UserVSCode`, `Custom`)
@@ -44,7 +44,7 @@
 - `src/copilot_converter/app.py`
 - `README.md`
 - `HANDOFF.md`
-- `scripts/install-vscode-fallback.ps1`
+- `scripts/install-vscode-fallback-copilot-converter.ps1`
 
 ## Verification
 

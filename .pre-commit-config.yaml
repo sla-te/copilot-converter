@@ -71,7 +71,7 @@ repos:
   - repo: local
     hooks:
       - id: powershell-syntax-check
-        name: powershell syntax check
+        name: powershell scriptanalyzer check
         entry: python3 scripts/precommit_pwsh_syntax_check.py
         language: system
         pass_filenames: true
