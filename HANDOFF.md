@@ -26,6 +26,15 @@
 - Missing local skill references are materialized as placeholders:
   - missing `references/*`, `assets/*`, `scripts/*` links in `SKILL.md` are created in output
   - missing sibling `../<skill>/SKILL.md` targets are generated as placeholder skills
+- VS Code fallback installer added for users not using Copilot plugin marketplaces:
+  - `scripts/install-vscode-fallback.ps1`
+  - installs selected plugin `agents` and `commands` into prompt files
+  - installs selected plugin `skills` directories into target skills folder
+  - supports interactive selection and target scopes (`Workspace`, `UserVSCode`, `UserCopilot`, `Custom`)
+  - supports source modes to avoid local clone dependency:
+    - `Auto` (default): local repo if present, otherwise download public GitHub ZIP
+    - `Remote`: always download from `RemoteArchiveUrl`
+    - `Local`: local-only source
 
 ## Key Files Changed
 
@@ -34,6 +43,7 @@
 - `src/copilot_converter/app.py`
 - `README.md`
 - `HANDOFF.md`
+- `scripts/install-vscode-fallback.ps1`
 
 ## Verification
 
@@ -42,6 +52,9 @@
   - `uv run mypy src/copilot_converter`
 - End-to-end generation:
   - `uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot --output ./plugins`
+- Fallback installer:
+  - not executed in this Linux CI shell because `pwsh` is not installed (`pwsh: command not found`)
+  - logic documented in `README.md` and intended for PowerShell environments (Windows / pwsh)
 
 ## Notes
 

@@ -94,6 +94,62 @@ For local testing without pushing:
 copilot plugin marketplace add /absolute/path/to/this/repo
 ```
 
+## VS Code Fallback Installer (No Marketplace)
+
+If a user cannot use Copilot CLI marketplaces yet, they can install content directly
+into VS Code prompt/skill folders.
+
+This repository provides a PowerShell helper:
+
+```powershell
+pwsh -File ./scripts/install-vscode-fallback.ps1
+```
+
+No-clone / no-git one-liner (downloads script + source archive automatically):
+
+```powershell
+irm https://raw.githubusercontent.com/sla-te/copilot-converter/main/scripts/install-vscode-fallback.ps1 | iex
+```
+
+What it installs:
+
+- `plugins/<plugin>/agents/*.md` -> `<prompts>/<name>.agent.md`
+- `plugins/<plugin>/commands/*.md` -> `<prompts>/<name>.prompt.md`
+- `plugins/<plugin>/skills/<skill-dir>` -> `<skills>/<skill-dir>`
+
+Target options in the script:
+
+- `Workspace` -> `<workspace>/.github/prompts` and `<workspace>/.github/skills`
+- `UserVSCode` -> VS Code user profile `prompts` and `skills` folders
+- `UserCopilot` -> `~/.copilot/prompts` and `~/.copilot/skills`
+- `Custom` -> user-provided paths
+
+Source options in the script:
+
+- `-SourceMode Auto` (default): use local repo if present, otherwise download ZIP from GitHub
+- `-SourceMode Local`: require local `plugins/` under `-RepoRoot` (or script parent/current dir)
+- `-SourceMode Remote`: always download from `-RemoteArchiveUrl`
+
+Example non-interactive run:
+
+```powershell
+pwsh -File ./scripts/install-vscode-fallback.ps1 `
+  -Target Workspace `
+  -WorkspaceRoot C:\src\my-repo `
+  -Plugins conductor,backend-development `
+  -Force
+```
+
+Example forcing remote source (no local repo required):
+
+```powershell
+pwsh -File ./scripts/install-vscode-fallback.ps1 `
+  -SourceMode Remote `
+  -Target UserVSCode `
+  -Plugins conductor,backend-development `
+  -Force
+```
+
 ## Validation
 
 ```bash
