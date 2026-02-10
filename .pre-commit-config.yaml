@@ -1,6 +1,8 @@
 default_language_version:
   python: python3.13
 
+exclude: ^plugins/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -36,7 +38,7 @@ repos:
         exclude: ^\.github/
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.43.3
+    rev: v1.43.4
     hooks:
       - id: typos
 
@@ -68,6 +70,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: powershell-syntax-check
+        name: powershell syntax check
+        entry: python3 scripts/precommit_pwsh_syntax_check.py
+        language: system
+        pass_filenames: true
+        files: \.ps1$
+        types: [text]
       - id: opengrep
         name: opengrep scan
         entry: opengrep scan --error --skip-unknown-extensions --exclude .venv --exclude build --exclude dist --exclude .github/prompts

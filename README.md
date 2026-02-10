@@ -1,86 +1,62 @@
 # Copilot Converter
 
-Convert plugin sources into installable Copilot plugin bundles.
+Convert source plugin repositories into Copilot plugin bundles, then optionally install them as VS Code fallback artifacts when marketplace installs are not available.
 
-## Source
+## Repository Structure
 
-The converter consumes two source repositories:
+- `src/copilot_converter/`: converter implementation
+- `plugins/`: generated plugin output (upstream-synced content)
+- `scripts/install-vscode-fallback.ps1`: VS Code fallback installer
+- `scripts/precommit_pwsh_syntax_check.py`: local PowerShell syntax hook helper
+- `.github/plugin/marketplace.json`: generated marketplace index
+- `plugin-selection.json`: plugin enable/disable state for conversion
 
-- `wshobson/agents` (default: `/home/toor/code/agents`) as the primary plugin source
-- `github/awesome-copilot` (default: `/home/toor/code/awesome-copilot`) for the `meta-agentic-project-scaffold` agent
+## Converter
 
-CLI positional arguments:
+Input sources:
 
-- `<agents_source> <awesome_source>`
+- `wshobson/agents` (default: `/home/toor/code/agents`)
+- `github/awesome-copilot` (default: `/home/toor/code/awesome-copilot`)
 
-## Output Contract
+CLI:
 
-Generated output root defaults to `./plugins`.
+- Positional args: `<agents_source> <awesome_source>`
+- Optional: `--output <path>`
+- Optional: `--decision-log <path>`
 
-For each source plugin at `plugins/<plugin_name>/`, the converter emits:
-
-- `plugins/<plugin_name>/.github/plugin/plugin.json`
-- `plugins/<plugin_name>/README.md`
-- `plugins/<plugin_name>/agents/*.md`
-- `plugins/<plugin_name>/commands/*.md`
-- `plugins/<plugin_name>/skills/*/SKILL.md`
-
-Additionally, the converter writes a marketplace index at:
-
-- `.github/plugin/marketplace.json`
-
-This lets you register the current repository as a Copilot CLI marketplace.
-
-The generated market also includes a `copilot-converter` plugin containing:
-
-- `agents/meta-agentic-project-scaffold.md`
-
-Skill support folders are preserved when present:
-
-- `assets/`
-- `references/`
-- `scripts/`
-- `examples/`
-- `resources/`
-
-If a generated `SKILL.md` references missing local relative files, placeholder files are created so links resolve.
-
-## Plugin Selection
-
-On every run, the app syncs `plugin-selection.json` in the workspace root.
-
-- Newly discovered plugins are added with `true`
-- Existing `true`/`false` toggles are preserved
-- Plugins referenced by enabled plugins' `SKILL.md` dependency links are auto-enabled
-- `auto_enabled_due_to_skill_references` records auto-enabled plugins
-
-## Usage
-
-Run with default sources and default output (`./plugins`):
+Run with defaults:
 
 ```bash
 uv run python -m copilot_converter
 ```
 
-Run with explicit sources:
+Run with explicit sources/output:
 
 ```bash
-uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot
+uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot --output ./plugins
 ```
 
-Run with explicit output:
+Converter output:
 
-```bash
-uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot --output /path/to/plugins
-```
+- `plugins/<plugin>/.github/plugin/plugin.json`
+- `plugins/<plugin>/README.md`
+- `plugins/<plugin>/agents/*.md` (when source agents exist)
+- `plugins/<plugin>/commands/*.md` (when source commands exist)
+- `plugins/<plugin>/skills/*/SKILL.md` (when source skills exist)
+- Skill support folders are preserved when present (`assets/`, `references/`, `scripts/`, `examples/`, `resources/`)
+- `.github/plugin/marketplace.json` is regenerated at repo root
+- Extra generated plugin: `plugins/copilot-converter/agents/meta-agentic-project-scaffold.md`
 
-Optional flags:
+Plugin selection behavior:
 
-- `--decision-log <path>` writes JSON conversion metadata
+- `plugin-selection.json` is synced on each run
+- New plugins are added as enabled by default
+- Existing enable/disable choices are preserved
+- Skill-linked dependencies are auto-enabled
 
-## Marketplace Usage
+## Copilot CLI Marketplace
 
-After generation and pushing this repository to GitHub:
+Register this repo as a marketplace:
 
 ```bash
 copilot plugin marketplace add github/<org>/<repo>
@@ -88,24 +64,21 @@ copilot plugin marketplace browse <marketplace-name>
 copilot plugin install <plugin-name>@<marketplace-name>
 ```
 
-For local testing without pushing:
+Local marketplace test:
 
 ```bash
 copilot plugin marketplace add /absolute/path/to/this/repo
 ```
 
-## VS Code Fallback Installer (No Marketplace)
+## VS Code Fallback Installer
 
-If a user cannot use Copilot CLI marketplaces yet, they can install content directly
-into VS Code prompt/skill folders.
-
-This repository provides a PowerShell helper:
+Run:
 
 ```powershell
 pwsh -File ./scripts/install-vscode-fallback.ps1
 ```
 
-No-clone / no-git one-liner (downloads script + source archive automatically):
+No-clone one-liner:
 
 ```powershell
 irm https://raw.githubusercontent.com/sla-te/copilot-converter/main/scripts/install-vscode-fallback.ps1 | iex
@@ -115,46 +88,96 @@ What it installs:
 
 - `plugins/<plugin>/agents/*.md` -> `<prompts>/<name>.agent.md`
 - `plugins/<plugin>/commands/*.md` -> `<prompts>/<name>.prompt.md`
-- `plugins/<plugin>/skills/<skill-dir>` -> `<skills>/<skill-dir>`
+- `plugins/<plugin>/skills/<skill-dir>` -> `<skills>/<skill-dir>` (whole folder, including `assets/` and `references/` if present)
 
-Target options in the script:
+Target modes:
 
-- `Workspace` -> `<workspace>/.github/prompts` and `<workspace>/.github/skills`
-- `UserVSCode` -> VS Code user profile `prompts` and `skills` folders
-- `UserCopilot` -> `~/.copilot/prompts` and `~/.copilot/skills`
-- `Custom` -> user-provided paths
+- `Workspace`: `<workspace>/.github/prompts` and `<workspace>/.github/skills`
+- `UserVSCode`: VS Code user profile `prompts/` and `skills/`
+- `Custom`: manually provided paths
 
-Source options in the script:
+Source modes:
 
-- `-SourceMode Auto` (default): use local repo if present, otherwise download ZIP from GitHub
-- `-SourceMode Local`: require local `plugins/` under `-RepoRoot` (or script parent/current dir)
-- `-SourceMode Remote`: always download from `-RemoteArchiveUrl`
+- `Auto`: prefer local source, fallback to remote archive
+- `Local`: require local `plugins/` under `-RepoRoot`
+- `Remote`: always use archive from `-RemoteArchiveUrl`
 
-Example non-interactive run:
+Remote source cache:
+
+- Default Windows cache root: `%TEMP%\copilot-converter`
+- Default macOS cache root: `~/Library/Caches/copilot-converter`
+- Default Linux cache root: `~/.cache/copilot-converter`
+- Override with `-SourceCacheRoot`
+- Cache uses per-URL foldering and metadata (`ETag`/`Last-Modified`) to avoid unnecessary downloads
+- `-KeepDownloadedSource` is retained for compatibility but persistent cache is now the default behavior
+
+Interactive selector behavior:
+
+- Plugins are expandable inline
+- Agents/commands are selectable per plugin
+- Skills are auto-included for selected plugins
+- Existing state is preloaded when available
+- `Backspace` goes back to target selection in interactive target mode
+- Interactive selection flow overwrites existing artifacts automatically
+
+State file:
+
+- Default path: `<prompts-parent>/copilot-converter-install-state.json`
+- Override with `-StateFilePath`
+- Stores selected plugins, agents, commands, and skills
+- Used to preselect values and power update mode
+
+Operation modes:
+
+- Install/add mode: select plugins/items and install them
+- Update mode: update existing installed artifacts tracked by state
+- In interactive target mode, operation mode can be chosen in CLI prompt
+
+Examples:
 
 ```powershell
 pwsh -File ./scripts/install-vscode-fallback.ps1 `
   -Target Workspace `
   -WorkspaceRoot C:\src\my-repo `
-  -Plugins conductor,backend-development `
-  -Force
+  -Plugins conductor,backend-development
 ```
-
-Example forcing remote source (no local repo required):
 
 ```powershell
 pwsh -File ./scripts/install-vscode-fallback.ps1 `
   -SourceMode Remote `
   -Target UserVSCode `
-  -Plugins conductor,backend-development `
-  -Force
+  -UpdateExisting
 ```
 
-## Validation
+```powershell
+pwsh -File ./scripts/install-vscode-fallback.ps1 `
+  -SourceMode Remote `
+  -Target UserVSCode `
+  -SourceCacheRoot C:\temp\copilot-cache
+```
+
+## Development Checks
+
+Install dev dependencies:
 
 ```bash
 uv sync --group dev
+```
+
+Run pre-commit hooks:
+
+```bash
+uv run prek -a
+```
+
+Targeted checks:
+
+```bash
 uv run ruff check src/copilot_converter
 uv run mypy src/copilot_converter
-uv run python -m copilot_converter /home/toor/code/agents /home/toor/code/awesome-copilot --output ./plugins
+uv run prek run powershell-syntax-check --files scripts/install-vscode-fallback.ps1
 ```
+
+Note:
+
+- Pre-commit excludes `plugins/` because that content is upstream-generated/synced.

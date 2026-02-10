@@ -34,8 +34,7 @@ def _marketplace_suggestion_command_docs() -> dict[str, dict[str, str]]:
         },
         "suggest-copilot-converter-collections": {
             "description": (
-                "Suggest relevant plugin collections from this repository marketplace "
-                "(translated from Claude plugins)."
+                "Suggest relevant plugin collections from this repository marketplace (translated from Claude plugins)."
             ),
             "title": "Suggest Marketplace Plugin Collections",
             "target": "`plugins/*`",
@@ -52,8 +51,7 @@ def _marketplace_suggestion_command_docs() -> dict[str, dict[str, str]]:
         },
         "suggest-copilot-converter-prompts": {
             "description": (
-                "Suggest relevant prompt files from this repository marketplace "
-                "(translated from Claude plugins)."
+                "Suggest relevant prompt files from this repository marketplace (translated from Claude plugins)."
             ),
             "title": "Suggest Marketplace Prompts",
             "target": "`plugins/*/commands/*.md`",
@@ -293,8 +291,6 @@ def process_plugins(plugin_dirs: Iterable[Path], output_root: Path, args: argpar
         agents_dir = plugin_output_dir / "agents"
         commands_dir = plugin_output_dir / "commands"
         skills_dir = plugin_output_dir / "skills"
-        for directory in (agents_dir, commands_dir, skills_dir):
-            directory.mkdir(parents=True, exist_ok=True)
 
         manifest = write_plugin_manifest(plugin_path, plugin_output_dir)
 
@@ -365,9 +361,6 @@ def process_awesome_meta_agent(awesome_source: Path, output_root: Path) -> Decis
     plugin_output_dir = output_root / plugin_name
     agents_dir = plugin_output_dir / "agents"
     commands_dir = plugin_output_dir / "commands"
-    skills_dir = plugin_output_dir / "skills"
-    for directory in (agents_dir, commands_dir, skills_dir):
-        directory.mkdir(parents=True, exist_ok=True)
 
     source_manifest_path = awesome_source / "plugins" / source_plugin_name / ".github" / "plugin" / "plugin.json"
     source_manifest = load_json(source_manifest_path) if source_manifest_path.exists() else {}

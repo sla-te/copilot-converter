@@ -30,11 +30,12 @@
   - `scripts/install-vscode-fallback.ps1`
   - installs selected plugin `agents` and `commands` into prompt files
   - installs selected plugin `skills` directories into target skills folder
-  - supports interactive selection and target scopes (`Workspace`, `UserVSCode`, `UserCopilot`, `Custom`)
+  - supports interactive selection and target scopes (`Workspace`, `UserVSCode`, `Custom`)
   - supports source modes to avoid local clone dependency:
     - `Auto` (default): local repo if present, otherwise download public GitHub ZIP
     - `Remote`: always download from `RemoteArchiveUrl`
     - `Local`: local-only source
+  - interactive install supports per-plugin expansion with checkbox-based item selection
 
 ## Key Files Changed
 
