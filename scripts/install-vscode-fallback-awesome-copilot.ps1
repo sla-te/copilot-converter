@@ -532,6 +532,14 @@ function Get-VSCodeUserRoot {
     return Join-Path $homePath ".config/Code/User"
 }
 
+function Get-CopilotUserRoot {
+    $homePath = [Environment]::GetFolderPath("UserProfile")
+    if ([string]::IsNullOrWhiteSpace($homePath)) {
+        $homePath = $HOME
+    }
+    return Join-Path $homePath ".copilot"
+}
+
 function Parse-SelectionInput {
     param(
         [AllowNull()][AllowEmptyString()][string]$InputValue = "",
@@ -1593,6 +1601,12 @@ function Select-InlineInstallItems {
     $headerLines = 7
     $minWidth = 50
     $goBack = $false
+    $selectionMutated = $false
+    $clearAllRequested = $false
+    $visiblePluginNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($state in $pluginStates) {
+        [void]$visiblePluginNames.Add($state.Plugin.Name)
+    }
 
     while ($true) {
         $rows = @()
@@ -1689,17 +1703,24 @@ function Select-InlineInstallItems {
                         $rowAtCursor.State.Expanded = -not $rowAtCursor.State.Expanded
                     }
                     else {
+                        $selectionMutated = $true
                         $k = $rowAtCursor.Child.Key
                         if ($selectedKeys.Contains($k)) { [void]$selectedKeys.Remove($k) } else { [void]$selectedKeys.Add($k) }
                     }
                 }
                 "Enter" { $done = $true }
-                "Escape" { $selectedKeys.Clear(); $done = $true }
+                "Escape" {
+                    $selectionMutated = $true
+                    $clearAllRequested = $true
+                    $selectedKeys.Clear()
+                    $done = $true
+                }
             }
         }
 
         if (-not $done -and ($key.KeyChar -eq "t" -or $key.KeyChar -eq "T")) {
             if ($rowAtCursor.RowType -eq "plugin") {
+                $selectionMutated = $true
                 $state = $rowAtCursor.State
                 $allSelected = $true
                 foreach ($child in $state.Children) {
@@ -1712,6 +1733,7 @@ function Select-InlineInstallItems {
         }
 
         if (-not $done -and ($key.KeyChar -eq "a" -or $key.KeyChar -eq "A")) {
+            $selectionMutated = $true
             $allSelected = $true
             foreach ($state in $pluginStates) {
                 foreach ($child in $state.Children) {
@@ -1726,6 +1748,7 @@ function Select-InlineInstallItems {
             }
         }
         if (-not $done -and ($key.KeyChar -eq "i" -or $key.KeyChar -eq "I")) {
+            $selectionMutated = $true
             foreach ($state in $pluginStates) {
                 foreach ($child in $state.Children) {
                     if ($selectedKeys.Contains($child.Key)) { [void]$selectedKeys.Remove($child.Key) } else { [void]$selectedKeys.Add($child.Key) }
@@ -1750,6 +1773,19 @@ function Select-InlineInstallItems {
             }
             elseif ($child.Kind -eq "prompt") {
                 $selectedCommands += New-CommandCandidate -Plugin $state.Plugin.Name -FileInfo $child.File -RepoRoot $RepoRoot
+            }
+        }
+    }
+
+    if (-not $clearAllRequested) {
+        foreach ($pluginName in $preselectedPluginNames) {
+            if (-not $visiblePluginNames.Contains($pluginName)) {
+                [void]$selectedPluginNames.Add($pluginName)
+            }
+        }
+        if (-not $selectionMutated) {
+            foreach ($pluginName in $preselectedPluginNames) {
+                [void]$selectedPluginNames.Add($pluginName)
             }
         }
     }
@@ -2258,7 +2294,7 @@ while ($true) {
         "UserVSCode" {
             $userRoot = Get-VSCodeUserRoot
             $PromptsPath = Join-Path $userRoot "prompts"
-            $SkillsPath = Join-Path $userRoot "skills"
+            $SkillsPath = Join-Path (Get-CopilotUserRoot) "skills"
         }
         "Custom" {
             if (-not $PromptsPath) { $PromptsPath = Read-Host "Enter prompts target path" }
