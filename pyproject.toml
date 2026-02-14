@@ -3,7 +3,7 @@ name = "copilot-converter"
 version = "0.1.0"
 description = "Utilities for converting Claude Code agents and plugins into GitHub Copilot artifacts."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = []
 
 [project.scripts]
@@ -38,7 +38,7 @@ lint.ignore = [
 lint.mccabe = { max-complexity = 14 }
 lint.pydocstyle = { convention = 'google' }
 line-length = 120
-target-version = "py313"
+target-version = "py314"
 
 [tool.mypy]
 ignore_missing_imports = false

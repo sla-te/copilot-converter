@@ -4,6 +4,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
+.github/commit-message.md
 
 # C extensions
 *.so
